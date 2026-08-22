@@ -48,7 +48,7 @@ class ShellResult(TypedDict, total=False):
     stdout: str
     stderr: str
     return_code: int
-    process_id: str  # Present when background=True
+    process_id: str  # Session-local process handle; present when background=True
     stdout_file_path: str  # Present when stdout exceeds limit
     stderr_file_path: str  # Present when stderr exceeds limit
     output_file_path: str  # Present when the full structured result exceeds limit
@@ -214,7 +214,7 @@ async def _start_background_shell_command(
             return_code=-1,
             process_id=process_id,
             hint=(
-                f"Background process started (id={process_id}). "
+                f"Background process started (handle={process_id}). "
                 "Use shell_wait to poll/wait for output, "
                 "shell_input to send stdin, "
                 "shell_kill to terminate."
@@ -370,7 +370,7 @@ class ShellTool(BaseTool):
             bool,
             Field(
                 default=False,
-                description="Run command in background. Returns immediately with a process_id. "
+                description="Run command in background. Returns immediately with a session-local process_id handle. "
                 "Use shell_wait to check results, shell_kill to terminate.",
             ),
         ] = False,
@@ -441,7 +441,7 @@ class ShellWaitTool(BaseTool):
     description = (
         "Wait for a background shell process. "
         "Set timeout_seconds=0 to poll (drain current output without waiting). "
-        "Use shell_status to list process IDs."
+        "Use shell_status to list process handles."
     )
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
@@ -452,7 +452,10 @@ class ShellWaitTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        process_id: Annotated[str, Field(description="Process ID returned by shell with background=True.")],
+        process_id: Annotated[
+            str,
+            Field(description="Session-local process handle returned by shell with background=True."),
+        ],
         timeout_seconds: Annotated[
             int,
             Field(
@@ -521,7 +524,8 @@ class ShellKillTool(BaseTool):
 
     name = "shell_kill"
     description = (
-        "Kill a running background shell process. Returns final buffered output. Use shell_status to list process IDs."
+        "Kill a running background shell process. Returns final buffered output. "
+        "Use shell_status to list process handles."
     )
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
@@ -532,7 +536,7 @@ class ShellKillTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        process_id: Annotated[str, Field(description="Process ID of the background process to kill.")],
+        process_id: Annotated[str, Field(description="Session-local handle of the background process to kill.")],
     ) -> ShellKillResult:
         shell = cast(Shell, ctx.deps.shell)
 
@@ -575,7 +579,7 @@ class ShellStatusTool(BaseTool):
     """Tool for querying background shell process status."""
 
     name = "shell_status"
-    description = "List all background shell processes and their status (running, completed, failed)."
+    description = "List all background shell process handles and their status (running, completed, failed)."
     tags = frozenset({"shell"})
     superseded_by_tags: frozenset[str] = frozenset()
 
@@ -619,7 +623,7 @@ class ShellInputTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        process_id: Annotated[str, Field(description="Process ID of the background process.")],
+        process_id: Annotated[str, Field(description="Session-local handle of the background process.")],
         text: Annotated[str, Field(description="Text to write to stdin. A trailing newline is added automatically.")],
         close_stdin: Annotated[
             bool,
@@ -684,7 +688,7 @@ class ShellSignalTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-        process_id: Annotated[str, Field(description="Process ID of the background process.")],
+        process_id: Annotated[str, Field(description="Session-local handle of the background process.")],
         signal: Annotated[
             int,
             Field(

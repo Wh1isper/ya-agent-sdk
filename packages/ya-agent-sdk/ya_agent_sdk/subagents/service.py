@@ -43,6 +43,7 @@ from ya_agent_sdk.inputs import (
     LogicalRunInputRouter,
     RunInputLedger,
 )
+from ya_agent_sdk.subagents.projection import model_record_payload
 from ya_agent_sdk.subagents.resolver import validate_resolved_subagent_plan_integrity
 from ya_agent_sdk.subagents.spec import (
     ResolvedSubagentPlan,
@@ -111,6 +112,23 @@ class SubagentRegistry:
                 clone_resolved_subagent_plan(self._active_by_route[name]) for name in sorted(self._active_by_route)
             )
 
+    def list_page(
+        self,
+        *,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[ResolvedSubagentPlan, ...], int]:
+        """List one bounded page of active routes and the total route count."""
+        if offset < 0 or limit < 1:
+            raise ValueError("Subagent plan page requires offset >= 0 and limit >= 1")
+        with self._lock:
+            names = sorted(self._active_by_route)
+            selected = names[offset : offset + limit]
+            return (
+                tuple(clone_resolved_subagent_plan(self._active_by_route[name]) for name in selected),
+                len(names),
+            )
+
     def list_registered(self) -> tuple[ResolvedSubagentPlan, ...]:
         """List every executable plan version, including retained descriptors."""
         with self._lock:
@@ -136,6 +154,30 @@ class SubagentRegistry:
 
 class SubagentExecutionIdConflict(ValueError):
     """Store-level signal that a generated public execution handle already exists."""
+
+
+@runtime_checkable
+class SubagentNonterminalExecutionStore(Protocol):
+    """Optional store optimization for lightweight fan-in snapshots."""
+
+    async def list_nonterminal_ids(
+        self,
+        *,
+        owner_scope_id: str,
+    ) -> tuple[str, ...]: ...
+
+
+@runtime_checkable
+class SubagentExecutionPageStore(Protocol):
+    """Optional store optimization for bounded model-facing execution listing."""
+
+    async def list_page(
+        self,
+        *,
+        owner_scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]: ...
 
 
 @runtime_checkable
@@ -249,6 +291,37 @@ class InMemorySubagentExecutionStore:
             )
             return tuple(record.model_copy(deep=True) for record in sorted(records, key=lambda item: item.created_at))
 
+    async def list_page(
+        self,
+        *,
+        owner_scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]:
+        async with self._lock:
+            records = sorted(
+                (record for record in self._records.values() if record.owner_scope_id == owner_scope_id),
+                key=lambda item: item.created_at,
+            )
+            selected = records[offset : offset + limit]
+            return tuple(record.model_copy(deep=True) for record in selected), len(records)
+
+    async def list_nonterminal_ids(
+        self,
+        *,
+        owner_scope_id: str,
+    ) -> tuple[str, ...]:
+        async with self._lock:
+            records = sorted(
+                (
+                    record
+                    for record in self._records.values()
+                    if record.owner_scope_id == owner_scope_id and not record.terminal
+                ),
+                key=lambda item: item.created_at,
+            )
+            return tuple(record.execution_id for record in records)
+
 
 @runtime_checkable
 class SubagentDriver(Protocol):
@@ -302,9 +375,9 @@ def create_subagent_execution_id(
     route: str,
     mode: SubagentExecutionMode,
 ) -> str:
-    """Create a readable, collision-resistant execution identity."""
-    marker = "-bg-" if mode is SubagentExecutionMode.background else "-"
-    return f"{route}{marker}{uuid4().hex[:4]}"
+    """Create a short, route-prefixed execution identity."""
+    del mode
+    return f"{route}-{uuid4().hex[:4]}"
 
 
 @runtime_checkable
@@ -899,7 +972,7 @@ class SubagentExecutionService:
         mode: SubagentExecutionMode | None = None,
         idempotency_key: str | None = None,
     ) -> SubagentHandle:
-        """Start a linked execution from a committed prior history snapshot."""
+        """Start a linked execution from one exact committed execution."""
         previous = await self._required_record(
             execution_id,
             owner_scope_id=_scope_id(parent_ctx),
@@ -1052,6 +1125,36 @@ class SubagentExecutionService:
         caller_scope_id: str,
     ) -> tuple[SubagentExecutionRecord, ...]:
         return await self.store.list(owner_scope_id=caller_scope_id)
+
+    async def list_nonterminal_ids(
+        self,
+        *,
+        caller_scope_id: str,
+    ) -> tuple[str, ...]:
+        """Return an owner-scoped snapshot of current nonterminal execution IDs."""
+        if isinstance(self.store, SubagentNonterminalExecutionStore):
+            return await self.store.list_nonterminal_ids(owner_scope_id=caller_scope_id)
+        records = await self.store.list(owner_scope_id=caller_scope_id)
+        return tuple(record.execution_id for record in records if not record.terminal)
+
+    async def list_page(
+        self,
+        *,
+        caller_scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]:
+        """Return one owner-scoped execution page without loading all records when supported."""
+        if offset < 0 or limit < 1:
+            raise ValueError("Subagent execution page requires offset >= 0 and limit >= 1")
+        if isinstance(self.store, SubagentExecutionPageStore):
+            return await self.store.list_page(
+                owner_scope_id=caller_scope_id,
+                offset=offset,
+                limit=limit,
+            )
+        records = await self.store.list(owner_scope_id=caller_scope_id)
+        return records[offset : offset + limit], len(records)
 
     async def admin_get(self, execution_id: str) -> SubagentExecutionRecord:
         """Privileged host inspection outside model-facing authorization."""
@@ -1432,7 +1535,7 @@ class SubagentExecutionService:
         mode: SubagentExecutionMode,
     ) -> str:
         async with self._execution_id_lock:
-            for _attempt in range(10):
+            for _attempt in range(100):
                 execution_id = self.execution_id_factory(route, mode)
                 if not isinstance(execution_id, str) or not execution_id or execution_id == "main":
                     raise ValueError("Subagent execution ID factory must return a non-empty, non-reserved string")
@@ -1579,17 +1682,10 @@ def _export_context_state(context: AgentContext) -> dict[str, Any]:
 
 
 def _completion_message(record: SubagentExecutionRecord) -> str:
-    payload = {
-        "execution_id": record.execution_id,
-        "route": record.route,
-        "state": record.state.value,
-        "output": record.output,
-        "error": record.error,
-    }
     return (
         "<subagent-completion>\n"
         + json.dumps(
-            payload,
+            model_record_payload(record, include_output=True),
             ensure_ascii=False,
             sort_keys=True,
         )

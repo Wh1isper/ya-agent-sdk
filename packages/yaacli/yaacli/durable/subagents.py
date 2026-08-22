@@ -98,6 +98,7 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
         self.database_path = database_path.expanduser().resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._active_descriptors: dict[str, SubagentPlanDescriptor] = {}
         self._connection = sqlite3.connect(
             self.database_path,
             timeout=30,
@@ -238,32 +239,40 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
             )
         return SubagentExecutionRecord.model_validate_json(row["record_json"])
 
+    @staticmethod
+    def _put_descriptor_row(
+        connection: sqlite3.Connection,
+        descriptor: SubagentPlanDescriptor,
+        *,
+        now: str,
+    ) -> None:
+        payload = descriptor.model_dump_json()
+        row = connection.execute(
+            "SELECT fingerprint, descriptor_json FROM subagent_plan_descriptors WHERE descriptor_id = ?",
+            (descriptor.descriptor_id,),
+        ).fetchone()
+        if row is None:
+            connection.execute(
+                "INSERT INTO subagent_plan_descriptors "
+                "(descriptor_id, fingerprint, descriptor_json, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (descriptor.descriptor_id, descriptor.fingerprint, payload, now),
+            )
+        elif row["fingerprint"] != descriptor.fingerprint or json.loads(row["descriptor_json"]) != json.loads(payload):
+            raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
+
     def put_descriptor(self, plan: ResolvedSubagentPlan) -> None:
         descriptor = plan.to_descriptor()
-        payload = descriptor.model_dump_json()
         now = datetime.now(UTC).isoformat()
         with self._lock:
             self._connection.execute("BEGIN IMMEDIATE")
             try:
-                row = self._connection.execute(
-                    "SELECT fingerprint, descriptor_json FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-                    (descriptor.descriptor_id,),
-                ).fetchone()
-                if row is None:
-                    self._connection.execute(
-                        "INSERT INTO subagent_plan_descriptors "
-                        "(descriptor_id, fingerprint, descriptor_json, created_at) "
-                        "VALUES (?, ?, ?, ?)",
-                        (descriptor.descriptor_id, descriptor.fingerprint, payload, now),
-                    )
-                elif row["fingerprint"] != descriptor.fingerprint or json.loads(row["descriptor_json"]) != json.loads(
-                    payload
-                ):
-                    raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
+                self._put_descriptor_row(self._connection, descriptor, now=now)
                 self._connection.execute("COMMIT")
             except BaseException:
                 self._connection.execute("ROLLBACK")
                 raise
+            self._active_descriptors[descriptor.descriptor_id] = descriptor
 
     def get_descriptor(self, descriptor_id: str) -> SubagentPlanDescriptor | None:
         with self._lock:
@@ -310,6 +319,16 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                 if existing is not None:
                     self._connection.execute("COMMIT")
                     return SubagentExecutionRecord.model_validate_json(existing["record_json"])
+                descriptor = self._active_descriptors.get(record.descriptor_id)
+                if descriptor is not None:
+                    self._put_descriptor_row(self._connection, descriptor, now=now)
+                else:
+                    descriptor_row = self._connection.execute(
+                        "SELECT 1 FROM subagent_plan_descriptors WHERE descriptor_id = ?",
+                        (record.descriptor_id,),
+                    ).fetchone()
+                    if descriptor_row is None:
+                        raise RuntimeError(f"Subagent execution references missing descriptor {record.descriptor_id!r}")
                 self._connection.execute(
                     "INSERT INTO subagent_executions "
                     "(execution_id, owner_scope_id, idempotency_key, record_json, input_open, created_at, updated_at) "
@@ -365,10 +384,10 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
                 if row is None:
                     raise KeyError(record.execution_id)
                 current = SubagentExecutionRecord.model_validate_json(row["record_json"])
-                if current.terminal and record.state is not current.state:
+                fenced = SessionStatus(row["owner_status"]) is not SessionStatus.active or bool(row["cancel_requested"])
+                if current.terminal and (record.state is not current.state or fenced):
                     self._connection.execute("COMMIT")
                     return current.model_copy(deep=True)
-                fenced = SessionStatus(row["owner_status"]) is not SessionStatus.active or bool(row["cancel_requested"])
                 if fenced and record.state is not SubagentExecutionState.cancelled:
                     raise TombstonedSessionError(f"Owner session {record.owner_scope_id!r} fenced a late child commit")
                 input_open = int(
@@ -458,6 +477,42 @@ class SQLiteSubagentExecutionStore(SubagentExecutionStore):
         with self._lock:
             rows = self._connection.execute(query, params).fetchall()
         return tuple(SubagentExecutionRecord.model_validate_json(row["record_json"]) for row in rows)
+
+    async def list_page(
+        self,
+        *,
+        owner_scope_id: str,
+        offset: int,
+        limit: int,
+    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]:
+        with self._lock:
+            total = cast(
+                int,
+                self._connection.execute(
+                    "SELECT COUNT(*) FROM subagent_executions WHERE owner_scope_id = ?",
+                    (owner_scope_id,),
+                ).fetchone()[0],
+            )
+            rows = self._connection.execute(
+                "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ? "
+                "ORDER BY created_at, execution_id LIMIT ? OFFSET ?",
+                (owner_scope_id, limit, offset),
+            ).fetchall()
+        return tuple(SubagentExecutionRecord.model_validate_json(row["record_json"]) for row in rows), total
+
+    async def list_nonterminal_ids(
+        self,
+        *,
+        owner_scope_id: str,
+    ) -> tuple[str, ...]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT execution_id FROM subagent_executions "
+                "WHERE owner_scope_id = ? AND input_open = 1 "
+                "ORDER BY created_at, execution_id",
+                (owner_scope_id,),
+            ).fetchall()
+        return tuple(str(row["execution_id"]) for row in rows)
 
     def accept_input(
         self,

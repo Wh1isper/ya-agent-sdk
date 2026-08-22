@@ -26,7 +26,7 @@ from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 from ya_agent_sdk.agents.main import AgentRuntime, RuntimeReadyContext
 from ya_agent_sdk.context import NoteManager, ResumableState, StreamEvent, TaskManager, ToolProxyState
-from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegmentRequest, AgentSegmentStatus
+from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegment, AgentSegmentRequest, AgentSegmentStatus
 from ya_agent_sdk.inputs import ActiveRunRegistry, InputDisposition, InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import DelegationCapability
 
@@ -257,6 +257,7 @@ class LocalExecutionCoordinator:
         current_prompt: str | Sequence[UserContent] | None = (
             prompt[0] if len(prompt) == 1 and isinstance(prompt[0], str) else prompt
         )
+        terminal_recovery: RevisionPayload | None = None
         try:
             while True:
                 request_limit = plan.request_limit
@@ -299,19 +300,30 @@ class LocalExecutionCoordinator:
                     )
                     try:
                         async with self.execution_harness.stream_segment(plan.runtime, request) as segment:
-                            async for event in segment:
-                                if isinstance(event.event, EnqueuedMessagesEvent):
-                                    # Native enqueue confirmation can precede the
-                                    # capability's next node hook. Reconcile before
-                                    # host projection and terminal failure fencing.
-                                    DurableInboxPumpCapability.reconcile_applied_enqueue(
-                                        plan.runtime.ctx,
-                                        event.event.enqueue_id,
-                                    )
-                                if self.event_sink is not None:
-                                    await self.event_sink(event)
-                            segment.raise_if_exception()
-                            outcome = segment.outcome()
+                            try:
+                                async for event in segment:
+                                    if isinstance(event.event, EnqueuedMessagesEvent):
+                                        # Native enqueue confirmation can precede the
+                                        # capability's next node hook. Reconcile before
+                                        # host projection and terminal failure fencing.
+                                        DurableInboxPumpCapability.reconcile_applied_enqueue(
+                                            plan.runtime.ctx,
+                                            event.event.enqueue_id,
+                                        )
+                                    if self.event_sink is not None:
+                                        await self.event_sink(event)
+                                segment.raise_if_exception()
+                                outcome = segment.outcome()
+                            except BaseException:
+                                terminal_recovery = self._capture_terminal_recovery(
+                                    run,
+                                    context,
+                                    segment,
+                                    stable_history=latest_history or [],
+                                    current_prompt=current_prompt,
+                                    cumulative_usage=cumulative_usage,
+                                )
+                                raise
                     finally:
                         runtime_bindings.unregister(execution_binding_ref, context)
 
@@ -370,7 +382,7 @@ class LocalExecutionCoordinator:
         except asyncio.CancelledError:
             current = self.store.get_run(run.logical_run_id) or run
             if current.status is LogicalRunStatus.cancelling:
-                return await self._commit_cancelled(current)
+                return await self._commit_cancelled(current, recovery=terminal_recovery)
             return await self._commit_interrupted(
                 current,
                 reason=(
@@ -378,9 +390,10 @@ class LocalExecutionCoordinator:
                     if self._shutting_down
                     else "Execution was interrupted before its active segment completed."
                 ),
+                recovery=terminal_recovery,
             )
         except BaseException as exc:
-            await self._commit_failure(run, exc)
+            await self._commit_failure(run, exc, recovery=terminal_recovery)
             raise
         finally:
             latest_context.durable_logical_run_id = None
@@ -596,13 +609,15 @@ class LocalExecutionCoordinator:
         self,
         run: LogicalRunRecord,
         error: BaseException,
+        *,
+        recovery: RevisionPayload | None = None,
     ) -> dict[str, Any]:
         terminal: dict[str, JsonValue] = {
             "status": LogicalRunStatus.failed.value,
             "error_type": type(error).__name__,
             "error": str(error) or repr(error),
         }
-        payload = self._stable_payload(run)
+        payload = recovery or self._stable_payload(run)
         self.store.commit_terminal(
             run.logical_run_id,
             commit_kind="failure",
@@ -612,12 +627,17 @@ class LocalExecutionCoordinator:
         )
         return terminal
 
-    async def _commit_cancelled(self, run: LogicalRunRecord) -> dict[str, Any]:
+    async def _commit_cancelled(
+        self,
+        run: LogicalRunRecord,
+        *,
+        recovery: RevisionPayload | None = None,
+    ) -> dict[str, Any]:
         terminal: dict[str, JsonValue] = {
             "status": LogicalRunStatus.cancelled.value,
             "reason": run.cancellation_reason or "cancelled",
         }
-        payload = self._stable_payload(run)
+        payload = recovery or self._stable_payload(run)
         self.store.commit_terminal(
             run.logical_run_id,
             commit_kind="cancelled",
@@ -627,12 +647,18 @@ class LocalExecutionCoordinator:
         )
         return terminal
 
-    async def _commit_interrupted(self, run: LogicalRunRecord, *, reason: str) -> dict[str, Any]:
+    async def _commit_interrupted(
+        self,
+        run: LogicalRunRecord,
+        *,
+        reason: str,
+        recovery: RevisionPayload | None = None,
+    ) -> dict[str, Any]:
         terminal: dict[str, JsonValue] = {
             "status": LogicalRunStatus.interrupted.value,
             "reason": reason,
         }
-        payload = self._stable_payload(run)
+        payload = recovery or self._stable_payload(run)
         self.store.commit_terminal(
             run.logical_run_id,
             commit_kind="interrupted",
@@ -641,6 +667,68 @@ class LocalExecutionCoordinator:
             event_type="run_interrupted",
         )
         return terminal
+
+    def _capture_terminal_recovery(
+        self,
+        run: LogicalRunRecord,
+        context: TUIContext,
+        segment: AgentSegment[TUIContext, Any, TUIEnvironment],
+        *,
+        stable_history: Sequence[ModelMessage],
+        current_prompt: str | Sequence[UserContent] | None,
+        cumulative_usage: RunUsage,
+    ) -> RevisionPayload | None:
+        """Capture safe process-local state for one controlled terminal exit."""
+        try:
+            history = _merge_recoverable_history(
+                stable_history,
+                segment.recoverable_messages(),
+                current_prompt=current_prompt,
+            )
+            usage = RunUsage()
+            usage.incr(cumulative_usage)
+            if segment.run is not None:
+                usage.incr(segment.run.usage)
+            payload = self._revision_payload(context, run, history, usage, {})
+            return self._sanitize_terminal_recovery(run, payload)
+        except Exception:
+            logger.exception(
+                "Failed to capture terminal recovery state for logical run %s; using stable checkpoint",
+                run.logical_run_id,
+            )
+            return None
+
+    def _sanitize_terminal_recovery(
+        self,
+        run: LogicalRunRecord,
+        payload: RevisionPayload,
+    ) -> RevisionPayload:
+        """Fence unresolved input while preserving applied recovery state."""
+        state = ResumableState.model_validate(payload.resumable_state)
+        ledger = state.run_input_ledger.model_copy(deep=True)
+        for item in self.store.list_inputs(run.logical_run_id):
+            if item.state is InputState.applied:
+                continue
+            record = ledger.find(item.input_id)
+            if record is not None and record.disposition is not InputDisposition.applied:
+                ledger.reject(item.input_id, "run terminated before input application")
+        state = state.model_copy(update={"run_input_ledger": ledger})
+        return payload.model_copy(
+            update={
+                "resumable_state": cast(
+                    dict[str, JsonValue],
+                    state.model_dump(mode="json"),
+                ),
+                "input_ledger": cast(
+                    dict[str, JsonValue],
+                    {
+                        **payload.input_ledger,
+                        "native": ledger.model_dump(mode="json"),
+                    },
+                ),
+                "display_projection": _safe_recovery_display_projection(payload.display_projection),
+            }
+        )
 
     def _stable_payload(self, run: LogicalRunRecord) -> RevisionPayload:
         checkpoint = self.store.get_execution_checkpoint(run.execution_id)
@@ -727,18 +815,23 @@ class LocalExecutionCoordinator:
 
 
 class LocalExecutionWorker:
-    """Own process-local runtimes and execute only runs created by this process."""
+    """Lazily own process-local runtimes and runs created by this process."""
 
     def __init__(
         self,
         *,
         store: SessionStore,
+        runtime_specs: dict[str, LocalRuntimeSpec],
         runtimes: dict[str, LocalRuntime],
+        base_binding_ref: str,
         coordinator: LocalExecutionCoordinator,
     ) -> None:
         self.store = store
+        self._runtime_specs = runtime_specs
         self._runtimes = runtimes
+        self._base_binding_ref = base_binding_ref
         self.coordinator = coordinator
+        self._activation_lock = asyncio.Lock()
         self._closed = False
 
     @property
@@ -757,8 +850,53 @@ class LocalExecutionWorker:
     def runtime_id(self) -> str:
         return self.active.runtime_id
 
-    def activate(self, runtime_id: str) -> LocalRuntime:
-        return self.coordinator.activate(runtime_id)
+    async def activate(self, runtime_id: str) -> LocalRuntime:
+        """Enter and cache one runtime before making it active."""
+        if self._closed:
+            raise RuntimeError("Local execution worker is closed")
+        try:
+            spec = self._runtime_specs[runtime_id]
+        except KeyError:
+            raise KeyError(runtime_id) from None
+
+        async with self._activation_lock:
+            if self._closed:
+                raise RuntimeError("Local execution worker is closed")
+            local_runtime = self._runtimes.get(runtime_id)
+            if local_runtime is None:
+                local_runtime = await self._enter_runtime(spec)
+                self._runtimes[runtime_id] = local_runtime
+            return self.coordinator.activate(runtime_id)
+
+    async def _enter_runtime(self, spec: LocalRuntimeSpec) -> LocalRuntime:
+        binding_ref = f"{self._base_binding_ref}:local:{spec.runtime_id}"
+        runtime = spec.build(binding_ref)
+        entered = False
+        try:
+            await runtime.__aenter__()
+            entered = True
+            runtime.ctx.runtime_descriptor_id = None
+            local_runtime = LocalRuntime(
+                runtime_id=spec.runtime_id,
+                runtime=runtime,
+                binding_ref=binding_ref,
+                binding_context=runtime.ctx,
+                request_limit=spec.request_limit,
+                hitl_policy=spec.hitl_policy,
+            )
+            runtime_bindings.register(binding_ref, runtime.ctx, self.store)
+            return local_runtime
+        except BaseException as error:
+            runtime_bindings.unregister(binding_ref, runtime.ctx)
+            if entered:
+                try:
+                    await runtime.__aexit__(None, None, None)
+                except BaseException as cleanup_error:
+                    raise BaseExceptionGroup(
+                        f"Runtime {spec.runtime_id!r} failed to enter and close",
+                        [error, cleanup_error],
+                    ) from None
+            raise
 
     @classmethod
     async def create(
@@ -782,30 +920,6 @@ class LocalExecutionWorker:
 
         base_binding_ref = f"yaacli-runtime:{uuid.uuid5(uuid.NAMESPACE_URL, str(state_path))}"
         runtimes: dict[str, LocalRuntime] = {}
-        entered: list[LocalRuntime] = []
-        try:
-            for spec in specs_by_id.values():
-                binding_ref = f"{base_binding_ref}:local:{spec.runtime_id}"
-                runtime = spec.build(binding_ref)
-                await runtime.__aenter__()
-                runtime.ctx.runtime_descriptor_id = None
-                local_runtime = LocalRuntime(
-                    runtime_id=spec.runtime_id,
-                    runtime=runtime,
-                    binding_ref=binding_ref,
-                    binding_context=runtime.ctx,
-                    request_limit=spec.request_limit,
-                    hitl_policy=spec.hitl_policy,
-                )
-                runtimes[spec.runtime_id] = local_runtime
-                entered.append(local_runtime)
-                runtime_bindings.register(binding_ref, runtime.ctx, store)
-        except BaseException:
-            for local_runtime in reversed(entered):
-                runtime_bindings.unregister(local_runtime.binding_ref, local_runtime.binding_context)
-                await local_runtime.runtime.__aexit__(None, None, None)
-            raise
-
         coordinator = LocalExecutionCoordinator(
             store=store,
             runtimes=runtimes,
@@ -813,7 +927,20 @@ class LocalExecutionWorker:
             event_sink=event_sink,
             display_projection_provider=display_projection_provider,
         )
-        return cls(store=store, runtimes=runtimes, coordinator=coordinator)
+        worker = cls(
+            store=store,
+            runtime_specs=specs_by_id,
+            runtimes=runtimes,
+            base_binding_ref=base_binding_ref,
+            coordinator=coordinator,
+        )
+        try:
+            active_runtime = await worker._enter_runtime(specs_by_id[active_runtime_id])
+        except BaseException:
+            worker._closed = True
+            raise
+        runtimes[active_runtime_id] = active_runtime
+        return worker
 
     async def __aenter__(self) -> LocalExecutionWorker:
         return self
@@ -822,13 +949,99 @@ class LocalExecutionWorker:
         await self.close()
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        await self.coordinator.shutdown()
-        for local_runtime in reversed(tuple(self._runtimes.values())):
-            await local_runtime.runtime.__aexit__(None, None, None)
-            runtime_bindings.unregister(local_runtime.binding_ref, local_runtime.binding_context)
+        async with self._activation_lock:
+            if self._closed:
+                return
+            self._closed = True
+            await self.coordinator.shutdown()
+            errors: list[BaseException] = []
+            for local_runtime in reversed(tuple(self._runtimes.values())):
+                try:
+                    await local_runtime.runtime.__aexit__(None, None, None)
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    runtime_bindings.unregister(local_runtime.binding_ref, local_runtime.binding_context)
+            if len(errors) == 1:
+                raise errors[0]
+            if errors:
+                raise BaseExceptionGroup("Multiple local runtimes failed to close", errors)
+
+
+def _merge_recoverable_history(
+    stable: Sequence[ModelMessage],
+    recovered: Sequence[ModelMessage],
+    *,
+    current_prompt: str | Sequence[UserContent] | None,
+) -> list[ModelMessage]:
+    """Merge one segment's safe partial history onto its stable boundary."""
+    stable_messages = list(stable)
+    recovered_messages = list(recovered)
+    if recovered_messages[: len(stable_messages)] == stable_messages:
+        merged = recovered_messages
+    elif stable_messages[: len(recovered_messages)] == recovered_messages:
+        merged = stable_messages
+    else:
+        overlap = next(
+            (
+                size
+                for size in range(min(len(stable_messages), len(recovered_messages)), 0, -1)
+                if stable_messages[-size:] == recovered_messages[:size]
+            ),
+            0,
+        )
+        merged = [*stable_messages, *recovered_messages[overlap:]]
+
+    if current_prompt is None:
+        return merged
+    prompt_content: str | list[UserContent]
+    prompt_content = current_prompt if isinstance(current_prompt, str) else list(current_prompt)
+    current_messages = merged[len(stable_messages) :]
+    if any(
+        isinstance(message, ModelRequest)
+        and any(isinstance(part, UserPromptPart) and part.content == prompt_content for part in message.parts)
+        for message in current_messages
+    ):
+        return merged
+    merged.insert(
+        len(stable_messages),
+        ModelRequest(parts=[UserPromptPart(content=prompt_content)]),
+    )
+    return merged
+
+
+def _safe_recovery_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:
+    """Exclude tool calls without a result in the same displayed run segment."""
+    indexed_events: list[tuple[int, JsonValue]] = []
+    segment_index = 0
+    for event in events:
+        if isinstance(event, dict) and event.get("type") == "RUN_STARTED":
+            segment_index += 1
+        indexed_events.append((segment_index, event))
+
+    tool_result_keys = {
+        (event_segment, tool_call_id)
+        for event_segment, event in indexed_events
+        if isinstance(event, dict) and event.get("type") == "TOOL_CALL_RESULT"
+        if isinstance(
+            tool_call_id := event.get("toolCallId") or event.get("tool_call_id"),
+            str,
+        )
+    }
+    safe_events = [
+        event
+        for event_segment, event in indexed_events
+        if not (
+            isinstance(event, dict)
+            and event.get("type") == "TOOL_CALL_CHUNK"
+            and (
+                event_segment,
+                event.get("toolCallId") or event.get("tool_call_id"),
+            )
+            not in tool_result_keys
+        )
+    ]
+    return _bound_display_projection(safe_events)
 
 
 def _bound_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:

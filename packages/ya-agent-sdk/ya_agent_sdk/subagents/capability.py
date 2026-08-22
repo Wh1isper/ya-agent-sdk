@@ -17,6 +17,14 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.inputs import InputOrigin
+from ya_agent_sdk.subagents.projection import (
+    DEFAULT_EXECUTION_PAGE_SIZE,
+    DEFAULT_OUTPUT_PAGE_CHARS,
+    MAX_EXECUTION_PAGE_SIZE,
+    MAX_OUTPUT_PAGE_CHARS,
+    model_record_json,
+    model_record_payload,
+)
 from ya_agent_sdk.subagents.service import (
     SubagentExecutionService,
     SubagentRegistry,
@@ -24,7 +32,7 @@ from ya_agent_sdk.subagents.service import (
 from ya_agent_sdk.subagents.spec import (
     SubagentExecutionMode,
     SubagentExecutionRecord,
-    SubagentExecutionState,
+    SubagentHandle,
     SubagentHistoryPolicy,
 )
 
@@ -60,7 +68,10 @@ class DelegationCapability(AbstractCapability[AgentContext]):
 
     def get_instructions(self) -> Any:
         async def instructions(_ctx: RunContext[AgentContext]) -> str | None:
-            plans = self.registry.list()
+            plans, total_plans = self.registry.list_page(
+                offset=0,
+                limit=DEFAULT_EXECUTION_PAGE_SIZE,
+            )
             if not plans:
                 return None
             lines = [
@@ -70,21 +81,29 @@ class DelegationCapability(AbstractCapability[AgentContext]):
             if not self.allow_mode_override:
                 if self.default_mode is SubagentExecutionMode.background:
                     lines.append(
-                        "This host runs delegate asynchronously: it returns an execution handle immediately, "
+                        "This host runs delegate asynchronously: it returns execution_id immediately, "
                         "and the final result arrives through subagent completion delivery."
                     )
                 else:
-                    lines.append("This host runs delegate inline and returns the child result as the tool result.")
+                    lines.append("This host runs delegate inline and returns a bounded structured result.")
+            lines.append("Use resume_subagent with a terminal execution_id to create a linked continuation.")
             lines.append("Available subagents:")
             for plan in plans:
                 description = plan.normalized_agent_spec.description
                 description_text = str(description) if description is not None else plan.spec.route
+                if len(description_text) > 300:
+                    description_text = description_text[:300] + "... [truncated]"
                 if self.allow_mode_override:
                     modes = ", ".join(mode.value for mode in plan.spec.execution_modes)
                     mode_text = f"modes: {modes}"
                 else:
                     mode_text = f"mode: {self.default_mode.value}"
                 lines.append(f"- {plan.spec.route}: {description_text} ({mode_text})")
+            if total_plans > len(plans):
+                lines.append(
+                    f"{total_plans - len(plans)} additional routes are available; "
+                    "use subagent_info plan_offset to inspect them."
+                )
             return "\n".join(lines)
 
         return instructions
@@ -96,71 +115,74 @@ class DelegationCapability(AbstractCapability[AgentContext]):
     def get_toolset(self) -> AbstractToolset[AgentContext]:  # noqa: C901
         toolset = FunctionToolset[AgentContext](id=self.id or "delegation")
 
+        async def _result(
+            ctx: RunContext[AgentContext],
+            handle: SubagentHandle,
+        ) -> str:
+            caller_scope_id = _caller_scope(ctx)
+            if handle.mode is SubagentExecutionMode.background:
+                record = await self.service.get(
+                    handle.execution_id,
+                    caller_scope_id=caller_scope_id,
+                )
+            else:
+                record = await self.service.wait(
+                    handle.execution_id,
+                    caller_scope_id=caller_scope_id,
+                )
+            return model_record_json(record, include_output=True)
+
         async def _delegate(
             ctx: RunContext[AgentContext],
             subagent_name: str,
             prompt: str,
             effective_mode: SubagentExecutionMode,
-            agent_id: str | None,
         ) -> str:
-            if agent_id is None:
-                plan = self.registry.get(subagent_name)
-                history: tuple[dict[str, Any], ...] = ()
-                if plan.spec.history is SubagentHistoryPolicy.parent_snapshot:
-                    parent_messages = list(ctx.messages)
-                    if parent_messages and isinstance(parent_messages[-1], ModelResponse):
-                        parent_messages.pop()
-                    bounded_messages = parent_messages[-plan.spec.history_message_limit :]
-                    history = tuple(
-                        ModelMessagesTypeAdapter.dump_python(
-                            bounded_messages,
-                            mode="json",
-                        )
+            plan = self.registry.get(subagent_name)
+            history: tuple[dict[str, Any], ...] = ()
+            if plan.spec.history is SubagentHistoryPolicy.parent_snapshot:
+                parent_messages = list(ctx.messages)
+                if parent_messages and isinstance(parent_messages[-1], ModelResponse):
+                    parent_messages.pop()
+                bounded_messages = parent_messages[-plan.spec.history_message_limit :]
+                history = tuple(
+                    ModelMessagesTypeAdapter.dump_python(
+                        bounded_messages,
+                        mode="json",
                     )
-                handle = await self.service.spawn(
-                    subagent_name,
-                    prompt,
-                    ctx.deps,
-                    mode=effective_mode,
-                    idempotency_key=_tool_operation_key(
-                        ctx,
-                        operation="spawn",
-                        target=subagent_name,
-                    ),
-                    history=history,
                 )
-            else:
-                previous = await self.service.get(
-                    agent_id,
-                    caller_scope_id=_caller_scope(ctx),
-                )
-                if previous.route != subagent_name:
-                    raise ValueError(f"Execution {agent_id!r} belongs to {previous.route!r}, not {subagent_name!r}")
-                handle = await self.service.resume(
-                    agent_id,
-                    prompt,
-                    ctx.deps,
-                    mode=effective_mode,
-                    idempotency_key=_tool_operation_key(
-                        ctx,
-                        operation="resume",
-                        target=agent_id,
-                    ),
-                )
-            if effective_mode is SubagentExecutionMode.background:
-                return json.dumps(
-                    {
-                        "execution_id": handle.execution_id,
-                        "route": handle.route,
-                        "mode": handle.mode.value,
-                    },
-                    sort_keys=True,
-                )
-            record = await self.service.wait(
-                handle.execution_id,
-                caller_scope_id=_caller_scope(ctx),
+            handle = await self.service.spawn(
+                subagent_name,
+                prompt,
+                ctx.deps,
+                mode=effective_mode,
+                idempotency_key=_tool_operation_key(
+                    ctx,
+                    operation="spawn",
+                    target=subagent_name,
+                ),
+                history=history,
             )
-            return _foreground_result(record)
+            return await _result(ctx, handle)
+
+        async def _resume(
+            ctx: RunContext[AgentContext],
+            execution_id: str,
+            prompt: str,
+            effective_mode: SubagentExecutionMode,
+        ) -> str:
+            handle = await self.service.resume(
+                execution_id,
+                prompt,
+                ctx.deps,
+                mode=effective_mode,
+                idempotency_key=_tool_operation_key(
+                    ctx,
+                    operation="resume",
+                    target=execution_id,
+                ),
+            )
+            return await _result(ctx, handle)
 
         async def delegate(
             ctx: RunContext[AgentContext],
@@ -172,13 +194,9 @@ class DelegationCapability(AbstractCapability[AgentContext]):
                 str,
                 Field(description="Bounded task and expected result"),
             ],
-            agent_id: Annotated[
-                str | None,
-                Field(description="Prior execution handle returned by delegate to resume"),
-            ] = None,
         ) -> str:
-            """Delegate using the execution mode fixed by this host."""
-            return await _delegate(ctx, subagent_name, prompt, self.default_mode, agent_id)
+            """Start a new subagent execution using the mode fixed by this host."""
+            return await _delegate(ctx, subagent_name, prompt, self.default_mode)
 
         async def delegate_with_mode(
             ctx: RunContext[AgentContext],
@@ -192,45 +210,129 @@ class DelegationCapability(AbstractCapability[AgentContext]):
             ],
             mode: Annotated[
                 SubagentExecutionMode | None,
-                Field(description="Foreground waits; background returns a handle"),
-            ] = None,
-            agent_id: Annotated[
-                str | None,
-                Field(description="Prior execution handle returned by delegate to resume"),
+                Field(description="Foreground waits; background returns immediately"),
             ] = None,
         ) -> str:
-            """Delegate using an explicitly selected execution mode."""
-            return await _delegate(ctx, subagent_name, prompt, mode or self.default_mode, agent_id)
+            """Start a new subagent execution using an explicitly selected mode."""
+            return await _delegate(ctx, subagent_name, prompt, mode or self.default_mode)
+
+        async def resume_subagent(
+            ctx: RunContext[AgentContext],
+            execution_id: Annotated[
+                str,
+                Field(description="Terminal execution_id returned by delegate or resume_subagent"),
+            ],
+            prompt: Annotated[
+                str,
+                Field(description="Bounded continuation task and expected result"),
+            ],
+        ) -> str:
+            """Create a linked continuation from one terminal execution."""
+            return await _resume(ctx, execution_id, prompt, self.default_mode)
+
+        async def resume_subagent_with_mode(
+            ctx: RunContext[AgentContext],
+            execution_id: Annotated[
+                str,
+                Field(description="Terminal execution_id returned by delegate or resume_subagent"),
+            ],
+            prompt: Annotated[
+                str,
+                Field(description="Bounded continuation task and expected result"),
+            ],
+            mode: Annotated[
+                SubagentExecutionMode | None,
+                Field(description="Foreground waits; background returns immediately"),
+            ] = None,
+        ) -> str:
+            """Create a linked continuation using an explicitly selected mode."""
+            return await _resume(ctx, execution_id, prompt, mode or self.default_mode)
 
         async def subagent_info(
             ctx: RunContext[AgentContext],
             execution_id: Annotated[
                 str | None,
-                Field(description="Execution handle returned by delegate; omit to list plans and executions"),
+                Field(description="Execution_id to inspect; omit to list plans and execution summaries"),
             ] = None,
+            output_offset: Annotated[
+                int,
+                Field(description="Character offset into the selected execution output", ge=0),
+            ] = 0,
+            output_limit: Annotated[
+                int,
+                Field(
+                    description="Maximum output characters to return for one execution",
+                    ge=1,
+                    le=MAX_OUTPUT_PAGE_CHARS,
+                ),
+            ] = DEFAULT_OUTPUT_PAGE_CHARS,
+            execution_offset: Annotated[
+                int,
+                Field(description="Offset into execution summaries when listing", ge=0),
+            ] = 0,
+            execution_limit: Annotated[
+                int,
+                Field(
+                    description="Maximum execution summaries to list",
+                    ge=1,
+                    le=MAX_EXECUTION_PAGE_SIZE,
+                ),
+            ] = DEFAULT_EXECUTION_PAGE_SIZE,
+            plan_offset: Annotated[
+                int,
+                Field(description="Offset into registered plans when listing", ge=0),
+            ] = 0,
+            plan_limit: Annotated[
+                int,
+                Field(
+                    description="Maximum registered plans to list",
+                    ge=1,
+                    le=MAX_EXECUTION_PAGE_SIZE,
+                ),
+            ] = DEFAULT_EXECUTION_PAGE_SIZE,
         ) -> str:
-            """Inspect registered plans or a specific child execution."""
+            """Inspect registered plans or one bounded page of child execution data."""
             caller_scope_id = _caller_scope(ctx)
             if execution_id is not None:
                 record = await self.service.get(
                     execution_id,
                     caller_scope_id=caller_scope_id,
                 )
-                return _model_record_json(record)
+                return model_record_json(
+                    record,
+                    include_output=True,
+                    output_offset=output_offset,
+                    output_limit=output_limit,
+                )
+            records, execution_total = await self.service.list_page(
+                caller_scope_id=caller_scope_id,
+                offset=execution_offset,
+                limit=execution_limit,
+            )
+            plans, plan_total = self.registry.list_page(
+                offset=plan_offset,
+                limit=plan_limit,
+            )
             return json.dumps(
                 {
                     "plans": [
                         {
                             "route": plan.spec.route,
-                            "descriptor_id": plan.descriptor_id,
                             "modes": [mode.value for mode in plan.spec.execution_modes],
                         }
-                        for plan in self.registry.list()
+                        for plan in plans
                     ],
-                    "executions": [
-                        _model_record_payload(record)
-                        for record in await self.service.list(caller_scope_id=caller_scope_id)
-                    ],
+                    "plan_pagination": _pagination_payload(
+                        offset=plan_offset,
+                        limit=plan_limit,
+                        total=plan_total,
+                    ),
+                    **_execution_page(
+                        records,
+                        offset=execution_offset,
+                        limit=execution_limit,
+                        total=execution_total,
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -241,12 +343,36 @@ class DelegationCapability(AbstractCapability[AgentContext]):
             ctx: RunContext[AgentContext],
             execution_id: Annotated[
                 str | None,
-                Field(description="Execution handle returned by delegate; omit to wait for all current children"),
+                Field(description="Execution_id to wait for; omit for one-shot fan-in"),
             ] = None,
             timeout_seconds: Annotated[
                 float | None,
                 Field(description="Optional bounded wait timeout in seconds", gt=0),
             ] = None,
+            output_offset: Annotated[
+                int,
+                Field(description="Character offset into one selected execution output", ge=0),
+            ] = 0,
+            output_limit: Annotated[
+                int,
+                Field(
+                    description="Maximum output characters to return for one execution",
+                    ge=1,
+                    le=MAX_OUTPUT_PAGE_CHARS,
+                ),
+            ] = DEFAULT_OUTPUT_PAGE_CHARS,
+            execution_offset: Annotated[
+                int,
+                Field(description="Offset into fan-in execution summaries", ge=0),
+            ] = 0,
+            execution_limit: Annotated[
+                int,
+                Field(
+                    description="Maximum fan-in execution summaries to return",
+                    ge=1,
+                    le=MAX_EXECUTION_PAGE_SIZE,
+                ),
+            ] = DEFAULT_EXECUTION_PAGE_SIZE,
         ) -> str:
             """Wait once for one child or fan in all current child executions."""
             caller_scope_id = _caller_scope(ctx)
@@ -262,17 +388,35 @@ class DelegationCapability(AbstractCapability[AgentContext]):
                         execution_id,
                         caller_scope_id=caller_scope_id,
                     )
-                return _model_record_json(record)
+                return model_record_json(
+                    record,
+                    include_output=True,
+                    output_offset=output_offset,
+                    output_limit=output_limit,
+                )
 
-            records = await self.service.list(caller_scope_id=caller_scope_id)
-            pending_ids = [record.execution_id for record in records if not record.terminal]
-            if pending_ids:
-                waits = [self.service.wait(current_id, caller_scope_id=caller_scope_id) for current_id in pending_ids]
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(asyncio.gather(*waits), timeout=timeout_seconds)
-            latest = await self.service.list(caller_scope_id=caller_scope_id)
+            async def wait_for_current() -> None:
+                pending_ids = await self.service.list_nonterminal_ids(caller_scope_id=caller_scope_id)
+                for index in range(0, len(pending_ids), DEFAULT_EXECUTION_PAGE_SIZE):
+                    batch = pending_ids[index : index + DEFAULT_EXECUTION_PAGE_SIZE]
+                    await asyncio.gather(
+                        *(self.service.wait(current_id, caller_scope_id=caller_scope_id) for current_id in batch)
+                    )
+
+            with suppress(TimeoutError):
+                await asyncio.wait_for(wait_for_current(), timeout=timeout_seconds)
+            latest, total = await self.service.list_page(
+                caller_scope_id=caller_scope_id,
+                offset=execution_offset,
+                limit=execution_limit,
+            )
             return json.dumps(
-                [_model_record_payload(record) for record in latest],
+                _execution_page(
+                    latest,
+                    offset=execution_offset,
+                    limit=execution_limit,
+                    total=total,
+                ),
                 ensure_ascii=False,
                 indent=2,
                 sort_keys=True,
@@ -313,13 +457,16 @@ class DelegationCapability(AbstractCapability[AgentContext]):
                 caller_scope_id=_caller_scope(ctx),
                 parent_ctx=ctx.deps,
             )
-            return _model_record_json(record)
+            return model_record_json(record)
 
         if self.allow_mode_override:
             delegate_with_mode.__name__ = "delegate"
+            resume_subagent_with_mode.__name__ = "resume_subagent"
             toolset.add_function(delegate_with_mode, takes_ctx=True)
+            toolset.add_function(resume_subagent_with_mode, takes_ctx=True)
         else:
             toolset.add_function(delegate, takes_ctx=True)
+            toolset.add_function(resume_subagent, takes_ctx=True)
         toolset.add_function(subagent_info, takes_ctx=True)
         toolset.add_function(wait_subagent, takes_ctx=True)
         toolset.add_function(steer_subagent, takes_ctx=True)
@@ -358,49 +505,33 @@ def _tool_operation_key(
     return f"delegation:{logical_run_id}:{tool_call_id}:{operation}:{target}"
 
 
-_MODEL_RECORD_FIELDS = {
-    "execution_id",
-    "route",
-    "mode",
-    "state",
-    "input_state",
-    "delivery_state",
-    "depth",
-    "resumed_from",
-    "created_at",
-    "started_at",
-    "completed_at",
-    "output",
-    "error",
-    "usage",
-    "segment_index",
-    "deferred",
-}
+def _execution_page(
+    records: tuple[SubagentExecutionRecord, ...],
+    *,
+    offset: int,
+    limit: int,
+    total: int,
+) -> dict[str, Any]:
+    return {
+        "executions": [model_record_payload(record) for record in records],
+        "pagination": _pagination_payload(
+            offset=offset,
+            limit=limit,
+            total=total,
+        ),
+    }
 
 
-def _model_record_payload(record: SubagentExecutionRecord) -> dict[str, Any]:
-    """Project one model-facing record without internal UUIDs or resumable state."""
-    return record.model_dump(
-        mode="json",
-        include=_MODEL_RECORD_FIELDS,
-    )
-
-
-def _model_record_json(record: SubagentExecutionRecord) -> str:
-    return json.dumps(
-        _model_record_payload(record),
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    )
-
-
-def _foreground_result(record: SubagentExecutionRecord) -> str:
-    if record.state is SubagentExecutionState.succeeded:
-        if isinstance(record.output, str):
-            return record.output
-        return json.dumps(record.output, ensure_ascii=False, sort_keys=True)
-    if record.state is SubagentExecutionState.suspended:
-        return _model_record_json(record)
-    detail = record.error or f"execution ended as {record.state.value}"
-    raise RuntimeError(f"Subagent {record.route!r} ({record.execution_id}) failed: {detail}")
+def _pagination_payload(
+    *,
+    offset: int,
+    limit: int,
+    total: int,
+) -> dict[str, int | None]:
+    end = min(offset + limit, total)
+    return {
+        "offset": offset,
+        "limit": limit,
+        "total": total,
+        "next_offset": end if end < total else None,
+    }

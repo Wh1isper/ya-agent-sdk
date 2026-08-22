@@ -61,6 +61,20 @@ from ya_agent_sdk.subagents import (
     resolve_subagent_output_type,
 )
 
+_MODEL_EXECUTION_RESULT_KEYS = {
+    "delivery_state",
+    "error",
+    "execution_id",
+    "has_deferred",
+    "input_state",
+    "mode",
+    "output",
+    "resumed_from",
+    "route",
+    "segment_index",
+    "state",
+}
+
 
 @dataclass
 class AuditCapability(AbstractCapability[AgentContext]):
@@ -619,7 +633,7 @@ async def test_in_process_service_runs_same_plan_in_foreground_and_background() 
     assert background_record.state.value == "succeeded"
     assert foreground_record.output == "success (no tool calls)"
     assert re.fullmatch(r"worker-[0-9a-f]{4}", foreground.execution_id)
-    assert re.fullmatch(r"worker-bg-[0-9a-f]{4}", background.execution_id)
+    assert re.fullmatch(r"worker-[0-9a-f]{4}", background.execution_id)
     assert background_record.delivery_state.value == "pending"
     feature_records = [record for record in parent.run_input_ledger.records if record.origin is InputOrigin.feature]
     assert len(feature_records) == 1
@@ -660,6 +674,34 @@ async def test_service_idempotency_returns_one_execution() -> None:
     assert first.execution_id == second.execution_id
     assert len(records) == 1
     assert records[0].input_state is SubagentInputState.applied
+
+
+async def test_service_resume_replay_returns_one_linked_execution() -> None:
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(catalog).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        InMemorySubagentExecutionStore(),
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: TestModel(call_tools=[]),
+        ),
+    )
+    parent = AgentContext(delegation_scope_id="session")
+    initial = await service.spawn("worker", "first", parent, idempotency_key="spawn")
+
+    first, replay = await asyncio.gather(
+        service.resume(initial.execution_id, "continue", parent, idempotency_key="resume"),
+        service.resume(initial.execution_id, "continue", parent, idempotency_key="resume"),
+    )
+    with pytest.raises(ValueError, match="different intent"):
+        await service.resume(initial.execution_id, "different", parent, idempotency_key="resume")
+    records = await service.list(caller_scope_id="session")
+    await service.close()
+
+    assert first.execution_id == replay.execution_id
+    assert len(records) == 2
+    assert records[1].resumed_from == initial.execution_id
 
 
 async def test_two_services_retry_a_store_level_execution_id_collision() -> None:
@@ -1617,16 +1659,26 @@ async def test_delegation_tool_fixes_inline_mode_and_hides_mode_argument_by_defa
     )
     capability = DelegationCapability(registry=registry, service=service)
     observed_delegate_schema: dict[str, object] = {}
+    observed_resume_schema: dict[str, object] = {}
+    observed_info_schema: dict[str, object] = {}
+    tool_result: dict[str, object] = {}
 
     def parent_model(
         messages: list[ModelMessage],
         info: FunctionAgentInfo,
     ) -> ModelResponse:
         delegate_tool = next(tool for tool in info.function_tools if tool.name == "delegate")
+        resume_tool = next(tool for tool in info.function_tools if tool.name == "resume_subagent")
+        info_tool = next(tool for tool in info.function_tools if tool.name == "subagent_info")
         observed_delegate_schema.update(delegate_tool.parameters_json_schema)
+        observed_resume_schema.update(resume_tool.parameters_json_schema)
+        observed_info_schema.update(info_tool.parameters_json_schema)
         last = messages[-1]
-        if isinstance(last, ModelRequest) and any(isinstance(part, ToolReturnPart) for part in last.parts):
-            return ModelResponse(parts=[TextPart(content="done")])
+        if isinstance(last, ModelRequest):
+            returned = next((part for part in last.parts if isinstance(part, ToolReturnPart)), None)
+            if returned is not None:
+                tool_result.update(json.loads(str(returned.content)))
+                return ModelResponse(parts=[TextPart(content="done")])
         return ModelResponse(
             parts=[
                 ToolCallPart(
@@ -1655,9 +1707,276 @@ async def test_delegation_tool_fixes_inline_mode_and_hides_mode_argument_by_defa
     properties = observed_delegate_schema["properties"]
     assert isinstance(properties, dict)
     assert "mode" not in properties
+    assert "agent_id" not in properties
+    resume_properties = observed_resume_schema["properties"]
+    assert isinstance(resume_properties, dict)
+    assert set(resume_properties) == {"execution_id", "prompt"}
+    info_properties = observed_info_schema["properties"]
+    assert isinstance(info_properties, dict)
+    assert info_properties["output_limit"]["maximum"] == 16_000
+    assert info_properties["execution_limit"]["maximum"] == 100
+    assert info_properties["plan_limit"]["maximum"] == 100
     assert len(records) == 1
     assert records[0].mode is SubagentExecutionMode.foreground
     assert re.fullmatch(r"worker-[0-9a-f]{4}", records[0].execution_id)
+    assert set(tool_result) == _MODEL_EXECUTION_RESULT_KEYS
+    assert tool_result["execution_id"] == records[0].execution_id
+    assert tool_result["state"] == "succeeded"
+    assert tool_result["output"] == {
+        "content": "success (no tool calls)",
+        "content_type": "text",
+        "next_offset": None,
+        "offset": 0,
+        "total_chars": 23,
+        "truncated": False,
+    }
+
+
+async def test_resume_subagent_uses_execution_id_and_returns_a_new_structured_handle() -> None:
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(catalog).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    registry = SubagentRegistry([plan])
+    service = SubagentExecutionService(
+        registry,
+        InMemorySubagentExecutionStore(),
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: TestModel(call_tools=[]),
+        ),
+    )
+    capability = DelegationCapability(registry=registry, service=service)
+    tool_results: list[dict[str, object]] = []
+
+    def parent_model(
+        messages: list[ModelMessage],
+        _info: FunctionAgentInfo,
+    ) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest):
+            returned = next((part for part in last.parts if isinstance(part, ToolReturnPart)), None)
+            if returned is not None:
+                tool_results.append(json.loads(str(returned.content)))
+                if returned.tool_name == "delegate":
+                    return ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                tool_name="resume_subagent",
+                                tool_call_id="resume-inline-call",
+                                args={
+                                    "execution_id": tool_results[0]["execution_id"],
+                                    "prompt": "continue bounded work",
+                                },
+                            )
+                        ]
+                    )
+                return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="delegate",
+                    tool_call_id="delegate-inline-call",
+                    args={"subagent_name": "worker", "prompt": "bounded work"},
+                )
+            ]
+        )
+
+    parent = AgentContext(
+        delegation_scope_id="session",
+        run_input_ledger=RunInputLedger(logical_run_id="parent-logical-run"),
+    )
+    agent = Agent(
+        FunctionModel(function=parent_model),
+        deps_type=AgentContext,
+        capabilities=[capability],
+    )
+
+    result = await agent.run("delegate and resume", deps=parent)
+    records = await service.list(caller_scope_id="session")
+    await service.close()
+
+    assert result.output == "done"
+    assert len(tool_results) == 2
+    assert len(records) == 2
+    assert tool_results[0]["execution_id"] == records[0].execution_id
+    assert tool_results[1]["execution_id"] == records[1].execution_id
+    assert records[1].execution_id != records[0].execution_id
+    assert records[1].resumed_from == records[0].execution_id
+    assert tool_results[1]["resumed_from"] == records[0].execution_id
+    assert all(re.fullmatch(r"worker-[0-9a-f]{4}", record.execution_id) for record in records)
+
+
+async def test_subagent_info_pages_output_and_lists_only_bounded_summaries() -> None:
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(catalog).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    registry = SubagentRegistry([plan])
+    store = InMemorySubagentExecutionStore()
+    for index, output in enumerate(("abcdefghij", "second"), start=1):
+        await store.create(
+            SubagentExecutionRecord(
+                execution_id=f"worker-000{index}",
+                root_execution_id=f"worker-000{index}",
+                owner_scope_id="session",
+                idempotency_key=f"spawn-{index}",
+                descriptor_id=plan.descriptor_id,
+                plan_fingerprint=plan.fingerprint,
+                route="worker",
+                mode=SubagentExecutionMode.foreground,
+                state=SubagentExecutionState.succeeded,
+                input_state=SubagentInputState.applied,
+                parent_agent_id="main",
+                parent_logical_run_id="parent-logical-run",
+                prompt="work",
+                output=output,
+                usage={"requests": 99},
+            )
+        )
+    service = SubagentExecutionService(
+        registry,
+        store,
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: TestModel(call_tools=[]),
+        ),
+    )
+    capability = DelegationCapability(registry=registry, service=service)
+    detail: dict[str, object] = {}
+    listing: dict[str, object] = {}
+    fan_in: dict[str, object] = {}
+
+    def parent_model(
+        messages: list[ModelMessage],
+        _info: FunctionAgentInfo,
+    ) -> ModelResponse:
+        last = messages[-1]
+        if isinstance(last, ModelRequest):
+            returned = next((part for part in last.parts if isinstance(part, ToolReturnPart)), None)
+            if returned is not None and not detail:
+                detail.update(json.loads(str(returned.content)))
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="subagent_info",
+                            tool_call_id="list-subagents-call",
+                            args={"execution_offset": 1, "execution_limit": 1},
+                        )
+                    ]
+                )
+            if returned is not None and not listing:
+                listing.update(json.loads(str(returned.content)))
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            tool_name="wait_subagent",
+                            tool_call_id="fan-in-subagents-call",
+                            args={"execution_offset": 0, "execution_limit": 1},
+                        )
+                    ]
+                )
+            if returned is not None:
+                fan_in.update(json.loads(str(returned.content)))
+                return ModelResponse(parts=[TextPart(content="done")])
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    tool_name="subagent_info",
+                    tool_call_id="inspect-output-call",
+                    args={"execution_id": "worker-0001", "output_limit": 4},
+                )
+            ]
+        )
+
+    parent = AgentContext(
+        delegation_scope_id="session",
+        run_input_ledger=RunInputLedger(logical_run_id="parent-logical-run"),
+    )
+    agent = Agent(
+        FunctionModel(function=parent_model),
+        deps_type=AgentContext,
+        capabilities=[capability],
+    )
+
+    result = await agent.run("inspect children", deps=parent)
+    await service.close()
+
+    assert result.output == "done"
+    assert detail["output"] == {
+        "content": "abcd",
+        "content_type": "text",
+        "next_offset": 4,
+        "offset": 0,
+        "total_chars": 10,
+        "truncated": True,
+    }
+    assert "usage" not in detail
+    assert "descriptor_id" not in detail
+    executions = listing["executions"]
+    assert isinstance(executions, list)
+    assert len(executions) == 1
+    assert executions[0]["execution_id"] == "worker-0002"
+    assert "output" not in executions[0]
+    assert "usage" not in executions[0]
+    assert listing["pagination"] == {
+        "limit": 1,
+        "next_offset": None,
+        "offset": 1,
+        "total": 2,
+    }
+    assert listing["plans"] == [{"modes": ["foreground"], "route": "worker"}]
+    assert listing["plan_pagination"] == {
+        "limit": 20,
+        "next_offset": None,
+        "offset": 0,
+        "total": 1,
+    }
+    fan_in_executions = fan_in["executions"]
+    assert isinstance(fan_in_executions, list)
+    assert len(fan_in_executions) == 1
+    assert "output" not in fan_in_executions[0]
+    assert fan_in["pagination"] == {
+        "limit": 1,
+        "next_offset": 1,
+        "offset": 0,
+        "total": 2,
+    }
+
+
+def test_background_completion_uses_the_same_bounded_projection() -> None:
+    from ya_agent_sdk.subagents.service import _completion_message
+
+    record = SubagentExecutionRecord(
+        execution_id="worker-a1b2",
+        root_execution_id="worker-a1b2",
+        owner_scope_id="session",
+        idempotency_key="spawn-once",
+        descriptor_id="worker:descriptor",
+        plan_fingerprint="f" * 64,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.succeeded,
+        input_state=SubagentInputState.applied,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-logical-run",
+        prompt="work",
+        output="x" * 5_000,
+        usage={"requests": 99},
+    )
+
+    message = _completion_message(record)
+    payload = json.loads(message.removeprefix("<subagent-completion>\n").removesuffix("\n</subagent-completion>"))
+
+    assert set(payload) == _MODEL_EXECUTION_RESULT_KEYS
+    assert payload["execution_id"] == "worker-a1b2"
+    assert payload["output"] == {
+        "content": "x" * 4_000,
+        "content_type": "text",
+        "next_offset": 4_000,
+        "offset": 0,
+        "total_chars": 5_000,
+        "truncated": True,
+    }
+    assert "usage" not in payload
+    assert "descriptor_id" not in payload
+    assert "root_execution_id" not in payload
 
 
 async def test_fixed_background_delegation_returns_readable_handle_without_waiting() -> None:
@@ -1768,12 +2087,13 @@ async def test_fixed_background_delegation_returns_readable_handle_without_waiti
     assert len(records) == 1
     assert records[0].state is SubagentExecutionState.running
     assert records[0].mode is SubagentExecutionMode.background
-    assert tool_result == {
-        "execution_id": records[0].execution_id,
-        "mode": "background",
-        "route": "worker",
-    }
-    assert re.fullmatch(r"worker-bg-[0-9a-f]{4}", records[0].execution_id)
+    assert set(tool_result) == _MODEL_EXECUTION_RESULT_KEYS
+    assert tool_result["execution_id"] == records[0].execution_id
+    assert tool_result["mode"] == "background"
+    assert tool_result["route"] == "worker"
+    assert tool_result["state"] in {"pending", "running"}
+    assert tool_result["output"] is None
+    assert re.fullmatch(r"worker-[0-9a-f]{4}", records[0].execution_id)
     assert public_record["execution_id"] == records[0].execution_id
     assert "child_logical_run_id" not in public_record
     assert "owner_scope_id" not in public_record

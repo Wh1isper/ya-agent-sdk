@@ -269,7 +269,12 @@ async def _run_headless_prompt(
             agent_name="yaacli_main_v2",
         )
 
-    store = SQLiteSessionStore(database_path)
+    store = SQLiteSessionStore(
+        database_path,
+        max_turns_per_session=config.session.max_turns_per_session,
+        max_sessions=config.session.max_sessions,
+        max_session_age_days=config.session.max_session_age_days,
+    )
     try:
         execution_worker = await LocalExecutionWorker.create(
             store=store,

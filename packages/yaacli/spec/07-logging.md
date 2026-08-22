@@ -52,7 +52,11 @@ Retention is bounded by:
 ### `configure_logging(verbose=False)`
 
 Configures startup logging. Default mode discards records; verbose mode writes
-DEBUG-and-above YAACLI/SDK records to the rotating file.
+DEBUG-and-above YAACLI/SDK records to the rotating file. Verbose startup records stable
+phase names and monotonic durations for runtime imports, configuration, builtin assets,
+runtime sources, durable store and plans, active runtime entry, application services,
+and background services. CLI help and version discovery do not import the runtime
+stack.
 
 ### `configure_tui_logging(level=logging.INFO, verbose=False)`
 

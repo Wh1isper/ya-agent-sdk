@@ -47,9 +47,9 @@ The transcript is stored as bounded render blocks and exposed through a virtual 
 - Streaming text and thinking update stable block IDs instead of appending duplicate snapshots.
 - A terminal revision never rebuilds the complete live transcript from its bounded,
   lossy replay projection. Successful runs keep their live segment; failed, cancelled,
-  or interrupted runs replace only the active segment with canonical stable events plus
-  tool calls already observed by the TUI. Uncommitted partial model text is removed,
-  while earlier and current-run tool history and scrollback remain available.
+  or interrupted runs replace only the active segment with the canonical terminal
+  projection. Controlled exits preserve safe partial model text and completed tool
+  calls, exclude incomplete tool calls, and leave unrelated scrollback unchanged.
 - Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
 
 ## Task Pane

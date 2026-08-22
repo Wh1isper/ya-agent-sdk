@@ -3,19 +3,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import pytest
 from pydantic_ai import DeferredToolRequests, Tool
 from pydantic_ai.capabilities import Toolset as NativeToolsetCapability
-from pydantic_ai.messages import ModelMessage, ModelRequest, RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, RetryPromptPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.execution import AgentSegment
 from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.bindings import runtime_bindings
 from yaacli.durable.capabilities import DurableInboxPumpCapability
-from yaacli.durable.executor import LocalExecutionWorker, LocalRuntimeSpec
+from yaacli.durable.executor import LocalExecutionWorker, LocalRuntimeSpec, _merge_recoverable_history
 from yaacli.durable.models import InputState, LogicalRunStatus
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.environment import TUIEnvironment
@@ -68,6 +71,18 @@ async def _create_worker(
     )
 
 
+def test_recoverable_history_merges_partial_stable_overlap_without_duplication() -> None:
+    first = ModelRequest(parts=[UserPromptPart(content="first")])
+    overlap = ModelRequest(parts=[UserPromptPart(content="overlap")])
+    recovered = ModelRequest(parts=[UserPromptPart(content="recovered")])
+
+    assert _merge_recoverable_history(
+        [first, overlap],
+        [overlap, recovered],
+        current_prompt=None,
+    ) == [first, overlap, recovered]
+
+
 async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     worker = await _create_worker(
@@ -94,9 +109,7 @@ async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path
         assert run.model == "test:model"
         assert run.model_profile_id == "test-profile"
         assert store.list_inputs(run.logical_run_id)[0].state is InputState.applied
-        checkpoint = store.get_execution_checkpoint(run.execution_id)
-        assert checkpoint is not None
-        assert checkpoint.segment_status == "completed"
+        assert store.get_execution_checkpoint(run.execution_id) is None
         assert store.read_events(session.session_id)[-1].event_type == "RUN_FINISHED"
         persisted = store.get_session(session.session_id)
         assert persisted is not None
@@ -228,7 +241,7 @@ async def test_worker_uses_runtime_active_when_each_run_starts(tmp_path: Path) -
         session = service.create_session(str(tmp_path), session_id="runtime-selection")
 
         first = await service.run_turn(session.session_id, ["first turn"])
-        worker.activate("second")
+        await worker.activate("second")
         second = await service.run_turn(session.session_id, ["second turn"])
 
         assert first.terminal["output"] == "first runtime"
@@ -237,6 +250,155 @@ async def test_worker_uses_runtime_active_when_each_run_starts(tmp_path: Path) -
     finally:
         await worker.close()
         store.close()
+
+
+async def test_worker_lazily_enters_profiles_and_closes_only_cached_runtimes(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    builds: list[str] = []
+    enters: list[str] = []
+    exits: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self, runtime_id: str) -> None:
+            self.runtime_id = runtime_id
+            self.ctx = SimpleNamespace(runtime_descriptor_id="initial")
+
+        async def __aenter__(self) -> FakeRuntime:
+            enters.append(self.runtime_id)
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            exits.append(self.runtime_id)
+
+    def spec(runtime_id: str) -> LocalRuntimeSpec:
+        def build(_binding_ref: str) -> Any:
+            builds.append(runtime_id)
+            return FakeRuntime(runtime_id)
+
+        return LocalRuntimeSpec(
+            runtime_id=runtime_id,
+            build=build,
+            request_limit=10,
+            hitl_policy="deny",
+        )
+
+    worker = await _create_worker(
+        store,
+        tmp_path,
+        spec("first"),
+        spec("second"),
+        spec("unused"),
+        active_runtime_id="first",
+    )
+    try:
+        assert builds == ["first"]
+        assert enters == ["first"]
+
+        first_activation = await worker.activate("second")
+        second_activation = await worker.activate("second")
+
+        assert first_activation is second_activation
+        assert builds == ["first", "second"]
+        assert enters == ["first", "second"]
+        assert worker.runtime_id == "second"
+    finally:
+        await worker.close()
+        store.close()
+
+    assert exits == ["second", "first"]
+    assert "unused" not in builds
+
+
+async def test_runtime_activation_cleans_up_when_binding_registration_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    exits: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self, runtime_id: str) -> None:
+            self.runtime_id = runtime_id
+            self.ctx = SimpleNamespace(runtime_descriptor_id="initial")
+
+        async def __aenter__(self) -> FakeRuntime:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            exits.append(self.runtime_id)
+
+    def spec(runtime_id: str) -> LocalRuntimeSpec:
+        return LocalRuntimeSpec(
+            runtime_id=runtime_id,
+            build=lambda _binding_ref: FakeRuntime(runtime_id),
+            request_limit=10,
+            hitl_policy="deny",
+        )
+
+    worker = await _create_worker(store, tmp_path, spec("first"), spec("second"))
+    original_register = runtime_bindings.register
+
+    def register(binding_ref: str, context: object, bound_store: SQLiteSessionStore) -> None:
+        if binding_ref.endswith(":local:second"):
+            raise ValueError("injected binding conflict")
+        original_register(binding_ref, context, bound_store)
+
+    monkeypatch.setattr(runtime_bindings, "register", register)
+    try:
+        with pytest.raises(ValueError, match="injected binding conflict"):
+            await worker.activate("second")
+        assert exits == ["second"]
+        assert worker.runtime_id == "first"
+    finally:
+        await worker.close()
+        store.close()
+
+    assert exits == ["second", "first"]
+
+
+async def test_worker_close_fences_new_runtime_activation(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+    builds: list[str] = []
+
+    class FakeRuntime:
+        def __init__(self, runtime_id: str) -> None:
+            self.runtime_id = runtime_id
+            self.ctx = SimpleNamespace(runtime_descriptor_id="initial")
+
+        async def __aenter__(self) -> FakeRuntime:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            if self.runtime_id == "first":
+                close_started.set()
+                await release_close.wait()
+
+    def spec(runtime_id: str) -> LocalRuntimeSpec:
+        def build(_binding_ref: str) -> FakeRuntime:
+            builds.append(runtime_id)
+            return FakeRuntime(runtime_id)
+
+        return LocalRuntimeSpec(
+            runtime_id=runtime_id,
+            build=build,
+            request_limit=10,
+            hitl_policy="deny",
+        )
+
+    worker = await _create_worker(store, tmp_path, spec("first"), spec("second"))
+    close_task = asyncio.create_task(worker.close())
+    try:
+        await asyncio.wait_for(close_started.wait(), timeout=1)
+        with pytest.raises(RuntimeError, match="worker is closed"):
+            await worker.activate("second")
+    finally:
+        release_close.set()
+        await close_task
+        store.close()
+
+    assert builds == ["first"]
 
 
 async def test_cumulative_request_limit_spans_deferred_segments(tmp_path: Path) -> None:
@@ -402,7 +564,140 @@ async def test_worker_shutdown_interrupts_active_process_owned_run(tmp_path: Pat
         assert revision is not None
         assert revision.terminal["status"] == "interrupted"
         assert "worker shutdown" in str(revision.terminal["reason"])
+        assert str(revision.message_history).count("wait") == 1
     finally:
         release_model.set()
+        await worker.close()
+        store.close()
+
+
+async def test_controlled_interruption_of_continuation_segment_keeps_safe_partial_history(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    continuation_started = asyncio.Event()
+    release_continuation = asyncio.Event()
+    model_calls = 0
+    approval_toolset = FunctionToolset[TUIContext](id="approval")
+
+    async def guarded_effect(value: str) -> str:
+        return value
+
+    approval_toolset.add_tool(Tool(guarded_effect, requires_approval=True))
+
+    async def stream_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            yield {
+                0: DeltaToolCall(
+                    name="guarded_effect",
+                    json_args='{"value":"approved"}',
+                    tool_call_id="approval-call",
+                )
+            }
+            return
+        yield "continuation partial output"
+        continuation_started.set()
+        await release_continuation.wait()
+
+    worker = await _create_worker(
+        store,
+        tmp_path,
+        _runtime_spec(
+            tmp_path,
+            FunctionModel(stream_function=stream_response),
+            capabilities=[NativeToolsetCapability(approval_toolset, id="approval")],
+            output_type=[str, DeferredToolRequests],
+            hitl_policy="wait",
+        ),
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="continuation-recovery")
+        run = await service.start_turn(session.session_id, ["start approved continuation"])
+        for _ in range(100):
+            persisted = store.get_run(run.logical_run_id)
+            if persisted is not None and persisted.status is LogicalRunStatus.suspended:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("run did not suspend")
+        assert persisted is not None
+        assert persisted.pending_action_batch_id is not None
+        batch = store.get_action_batch(persisted.pending_action_batch_id)
+        assert batch is not None
+        await service.decide_action(batch.items[0].action_item_id, {"approved": True})
+        await asyncio.wait_for(continuation_started.wait(), timeout=5)
+
+        await service.cancel(run.logical_run_id, reason="stop continuation")
+
+        revision = store.get_revision_for_run(run.logical_run_id)
+        assert revision is not None
+        assert revision.terminal == {"status": "cancelled", "reason": "stop continuation"}
+        history = str(revision.message_history)
+        assert model_calls == 2
+        assert history.count("start approved continuation") == 1
+        assert history.count("continuation partial output") == 1
+    finally:
+        release_continuation.set()
+        await worker.close()
+        store.close()
+
+
+async def test_terminal_recovery_capture_failure_uses_last_stable_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    second_started = asyncio.Event()
+    release_failure = asyncio.Event()
+    model_calls = 0
+
+    async def stream_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str]:
+        nonlocal model_calls
+        model_calls += 1
+        if model_calls == 1:
+            yield "stable first answer"
+            return
+        yield "discarded partial answer"
+        second_started.set()
+        await release_failure.wait()
+        raise RuntimeError("second turn failed")
+
+    worker = await _create_worker(
+        store,
+        tmp_path,
+        _runtime_spec(tmp_path, FunctionModel(stream_function=stream_response)),
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="capture-fallback")
+        stable = await service.run_turn(session.session_id, ["first input"])
+        run = await service.start_turn(session.session_id, ["second input"])
+        await asyncio.wait_for(second_started.wait(), timeout=5)
+
+        def fail_recovery(_segment: AgentSegment[Any, Any, Any]) -> list[ModelMessage]:
+            raise RuntimeError("capture failed")
+
+        monkeypatch.setattr(AgentSegment, "recoverable_messages", fail_recovery)
+        release_failure.set()
+        with pytest.raises(RuntimeError, match="second turn failed"):
+            await service.wait(run.logical_run_id)
+
+        revision = store.get_revision_for_run(run.logical_run_id)
+        assert revision is not None
+        assert revision.terminal["status"] == "failed"
+        assert revision.message_history == stable.message_history
+        assert "second input" not in str(revision.message_history)
+        assert "discarded partial answer" not in str(revision.message_history)
+    finally:
+        release_failure.set()
         await worker.close()
         store.close()

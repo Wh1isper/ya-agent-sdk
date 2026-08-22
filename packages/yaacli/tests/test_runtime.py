@@ -31,6 +31,7 @@ from ya_agent_sdk.capabilities import (
     UserInteractionCapability,
     build_default_capability_catalog,
 )
+from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig
 from ya_agent_sdk.subagents import (
     DelegationCapability,
     SelfForkPolicy,
@@ -43,8 +44,6 @@ from ya_agent_sdk.subagents import (
 from yaacli.config import (
     ConfigManager,
     GeneralConfig,
-    MCPConfig,
-    MCPServerConfig,
     ModelProfileConfig,
     SubagentOverride,
     SubagentsConfig,

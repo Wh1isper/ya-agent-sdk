@@ -14,6 +14,7 @@ from ya_agent_stream_protocol.sdk import AguiEventAdapter
 from yaacli.app import TUIApp
 from yaacli.app.tui import YAACLI_AGUI_ADAPTER_CONFIG, PendingAttachment
 from yaacli.config import CommandDefinition
+from yaacli.durable.executor import _safe_recovery_display_projection
 from yaacli.durable.models import InputPriority, InputRecord, InputState, RevisionRecord
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason
 from yaacli.session import TUIContext
@@ -108,6 +109,38 @@ def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
 
     assert any("(1.5s)" in line for line in app._output_lines)
     assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
+
+
+def test_terminal_recovery_projection_drops_only_incomplete_tool_calls() -> None:
+    projected = _safe_recovery_display_projection([
+        {"type": "RUN_STARTED", "runId": "run-1"},
+        {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "partial text"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "complete-tool",
+            "toolCallName": "shell",
+            "delta": '{"command":"true"}',
+        },
+        {"type": "TOOL_CALL_RESULT", "toolCallId": "complete-tool", "content": "done"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "incomplete-tool",
+            "toolCallName": "shell",
+            "delta": '{"command":',
+        },
+        {"type": "RUN_STARTED", "runId": "run-2"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "complete-tool",
+            "toolCallName": "shell",
+            "delta": '{"command":"must not match the prior run"}',
+        },
+    ])
+
+    assert any(event.get("type") == "TEXT_MESSAGE_CHUNK" for event in projected)
+    complete_tool_events = [event for event in projected if event.get("toolCallId") == "complete-tool"]
+    assert [event["type"] for event in complete_tool_events] == ["TOOL_CALL_CHUNK", "TOOL_CALL_RESULT"]
+    assert not any(event.get("toolCallId") == "incomplete-tool" for event in projected)
 
 
 def test_non_success_reconciliation_preserves_tools_and_unrelated_background_output() -> None:

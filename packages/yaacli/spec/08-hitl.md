@@ -150,10 +150,12 @@ than dynamic probing of model history.
 Cancellation closes input, cancels the owning process task, commits cancelled terminal
 state, and never synthesizes approval or external results.
 
-After process restart, pending batches remain auditable in `SessionStore`, but the old
-process-owned execution is committed as `interrupted` from its stable suspended
-checkpoint. YAACLI does not recreate the old task or replay the incomplete segment. A
-later continuation is an explicit new turn from the committed head.
+On controlled cancellation during a continuation segment, YAACLI publishes safe partial
+text and host state while keeping the old execution terminal. After process restart,
+pending batches remain auditable in `SessionStore`, but the old process-owned execution
+is committed as `interrupted` from its stable suspended checkpoint. YAACLI does not
+recreate the old task or replay the incomplete segment. A later continuation is an
+explicit new turn from the committed head.
 
 Session switching scopes actions by logical-run/session identity, so an old session's
 decision cannot resolve a new session's request.

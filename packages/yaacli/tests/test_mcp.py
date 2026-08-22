@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yaacli.config import MCPConfig, MCPServerConfig
+from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig
 from yaacli.mcp import build_mcp_server, build_mcp_servers, extract_optional_mcps
 
 # =============================================================================

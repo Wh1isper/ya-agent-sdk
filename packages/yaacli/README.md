@@ -43,10 +43,12 @@ uv tool upgrade yaacli
 YAACLI accepts both generic Markdown definitions and native versioned `SubagentSpec`
 YAML/JSON documents under `~/.yaacli/subagents/`. In the interactive TUI, the visible
 `delegate` tool is processor-hosted and fully asynchronous: it immediately returns a
-readable `<subagent-name>-bg-<short-id>` handle. Resume, wait, steering, and cancellation
-reuse that handle; internal durable UUIDs are not model-facing. The one-shot headless
-frontend fixes the same processor-hosted tool to foreground mode and returns the child
-result before shutdown.
+bounded structured result with a readable `<subagent-name>-<4hex>` `execution_id`.
+Foreground and background use the same handle format; mode is explicit result data. Use
+`resume_subagent(execution_id, prompt)` for linked continuation, and use the returned
+execution ID for wait, steering, and cancellation. The one-shot headless frontend fixes
+the same processor-hosted tool to foreground mode and returns the same result shape with
+a bounded output page before shutdown.
 
 ```markdown
 ---
@@ -153,7 +155,11 @@ yaacli sessions delete <session-id>
 Session IDs may be supplied by unique prefix. The YAACLI 2 product store defaults to
 `~/.yaacli/sessions/sessions-v2.sqlite3`; the former `sessions.sqlite3` is left untouched
 and is not migrated automatically. An explicit `[session] database_path` or
-`YAACLI_DATABASE_PATH` remains authoritative and is validated strictly. See
+`YAACLI_DATABASE_PATH` remains authoritative and is validated strictly. Startup
+maintenance retains 20 complete turns per session and 100 quiescent sessions by
+default; `[session] max_turns_per_session`, `max_sessions`, and the optional
+`max_session_age_days` tune these limits. Nonterminal main and child work is never
+automatically selected for deletion. See
 [`spec/05-session-persistence.md`](spec/05-session-persistence.md).
 
 ## TUI Interaction
@@ -163,7 +169,7 @@ The output viewport has priority over auxiliary UI. The task pane is hidden when
 - Enter submits while idle and sends guidance to the active run while an agent is running.
 - Ordinary text submitted during an active agent run is durable steering. YAACLI persists the original text before displaying a replayable `Guidance sent to the active run.` receipt and waking the owning local execution task. The native enqueue boundary applies the established model-facing steering reminder envelope rather than treating the text as a new ordinary prompt; native application later displays a distinct replayable `Guidance injected` projection. This uses native Pydantic AI enqueue and does not restore MessageBus. The status bar counts accepted/enqueued inputs without exposing their content. Registered slash commands and `!shell` remain local control syntax: safe busy commands execute and idle-only commands are rejected without clearing the draft. Other slash-prefixed text, including absolute paths such as `/home/user/file`, remains ordinary user input.
 - `/cancel` or `Ctrl+C` requests cancellation of cancellable foreground work. Once the TUI enters `SAVING`, persistence is allowed to finish and cannot be cancelled; Ctrl+C does not exit while the save is in progress.
-- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session. Tombstoning the previous session atomically closes its main and child input, persists cancellation intent for every nonterminal child, and retries process-local cancellation dispatch; late child success, steering, and completion delivery are fenced while the runtime environment remains reusable.
+- `/clear` clears only the visible transcript; `/new` starts a fresh conversation and session. Tombstoning refuses nonterminal main work, closes child input, atomically records nonterminal children as cancelled, and persists cancellation intent; late child success, steering, and completion delivery are fenced while the runtime environment remains reusable.
 - Background results never modify or clear the compose area. A terminal background subagent is projected as session-scoped readiness only; its committed result enters the canonical parent continuation path on the next accepting agent turn and does not automatically wake the model. Monitored-shell notifications are persisted as feature input and may start one idle turn according to shell-monitor policy. There is no `/integrate` command or MessageBus delivery path.
 - `/agents` shows running and recently completed background subagents; `/process` shows active background shell processes.
 - `/attachments` and `/remove-image` inspect or edit images queued for the next turn.

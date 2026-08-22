@@ -19,7 +19,7 @@ from yaacli.durable.models import (
     SessionSummary,
     StartRunRequest,
 )
-from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.sqlite import SQLiteSessionStore, StoreMaintenanceResult
 from yaacli.durable.store import (
     HeadConflictError,
     InvalidTransitionError,
@@ -49,5 +49,6 @@ __all__ = [
     "SessionStore",
     "SessionSummary",
     "StartRunRequest",
+    "StoreMaintenanceResult",
     "TombstonedSessionError",
 ]

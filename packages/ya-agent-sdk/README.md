@@ -194,11 +194,14 @@ runtime = create_agent(
 
 `SubagentExecutionService` separates portable records and lifecycle semantics from host
 coroutine ownership. The standalone SDK defaults to `InlineSubagentExecutionHost`, so
-`delegate` is foreground-only, runs in the calling tool task, and propagates cancellation
-and failures normally. Applications that intentionally support background work inject a
-`SubagentExecutionHost` such as `AsyncioSubagentExecutionHost` or their own durable
-scheduler. Model-facing execution handles are short and route-prefixed; internal logical
-run and correlation UUIDs remain private.
+`delegate` is foreground-only and runs in the calling tool task. Applications that
+intentionally support background work inject a `SubagentExecutionHost` such as
+`AsyncioSubagentExecutionHost` or their own durable scheduler. Both modes return the
+same bounded structured result with a short route-prefixed `execution_id` such as
+`code-reviewer-f1a2`; mode is explicit data and is not encoded in the handle. Use the
+separate `resume_subagent(execution_id, prompt)` model tool for linked continuation.
+Inspection, wait, fan-in, and background-completion projections are paged or bounded;
+internal descriptors, usage state, logical-run IDs, and correlation UUIDs remain private.
 
 See [the portable subagent specification](spec/05-capability-first-runtime/07-subagent-runtime.md)
 and [the agent-builder guide](../../skills/agent-builder/subagent.md).
@@ -272,6 +275,15 @@ stream = env.file_operator.read_bytes_stream(path)
 async for chunk in stream:
     ...
 ```
+
+## Background Shell Handles
+
+`Shell.start()` and `shell_exec(background=True)` return compact session-local handles
+such as `process-1`. The same `process_id` value is used by `shell_wait`, `shell_status`,
+`shell_input`, `shell_signal`, `shell_kill`, completion injection, and lifecycle events.
+A successful shell-session reset restarts the sequence; foreground commands do not
+consume it. The handle is not an OS PID, process-group ID, container exec token, UUID,
+or durable host key. Those identities remain private to the Environment backend.
 
 ## Local Shell Sandbox Policy
 

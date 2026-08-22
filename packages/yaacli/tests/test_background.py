@@ -98,6 +98,7 @@ async def test_shell_monitor_reset_terminates_and_discards_session_processes(
     monitor.start(shell, poll_interval=0.01)
     try:
         process_id = await shell.start(_python_command("import time; time.sleep(30)"))
+        assert process_id == "process-1"
         monitor.register(process_id)
 
         await monitor.reset_session_state()
@@ -108,6 +109,7 @@ async def test_shell_monitor_reset_terminates_and_discards_session_processes(
             await shell.wait_process(process_id, timeout=0)
 
         next_process = await shell.start(_python_command("print('reusable')"))
+        assert next_process == "process-1"
         stdout, _stderr, running, exit_code = await shell.wait_process(
             next_process,
             timeout=1,

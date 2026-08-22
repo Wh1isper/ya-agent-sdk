@@ -59,7 +59,7 @@ from ya_agent_sdk.capabilities import (
 )
 from ya_agent_sdk.context import ModelConfig, SecurityConfig, ShellReviewConfig, ToolConfig
 from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent
-from ya_agent_sdk.mcp import build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
+from ya_agent_sdk.mcp import MCPConfig, build_mcp_servers, extract_mcp_descriptions, extract_optional_mcps
 from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.subagents import (
     DelegationCapability,
@@ -75,7 +75,7 @@ from ya_agent_sdk.toolsets.core.base import Toolset
 from ya_agent_sdk.toolsets.search import create_best_strategy
 from ya_agent_sdk.toolsets.skills.toolset import SHARED_SKILLS_DIR_NAME, SkillToolset
 
-from yaacli.config import ConfigManager, MCPConfig, SubagentsConfig, YaacliConfig
+from yaacli.config import ConfigManager, SubagentsConfig, YaacliConfig
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.subagents import (

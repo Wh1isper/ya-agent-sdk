@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 from click.testing import CliRunner
 from yaacli.cli import cli
+from yaacli.config import YaacliConfig
 from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.models import RevisionPayload
 from yaacli.durable.sqlite import SQLiteSessionStore
@@ -32,6 +33,7 @@ def _seed_session(database_path: Path, *, session_id: str = "abc123def456") -> N
 
 def _manager(database_path: Path) -> MagicMock:
     manager = MagicMock()
+    manager.config = YaacliConfig()
     manager.get_session_database_path.return_value = database_path
     return manager
 

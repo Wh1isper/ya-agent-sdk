@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from yaacli.durable import (
     InvalidTransitionError,
     LogicalRunStatus,
     RevisionPayload,
+    SessionStatus,
     SQLiteSessionStore,
     StartRunRequest,
     TombstonedSessionError,
@@ -313,6 +315,159 @@ def test_terminal_revision_and_event_are_atomic_and_idempotent(tmp_path: Path) -
                 terminal_status=LogicalRunStatus.completed,
                 event_type="RUN_FINISHED",
             )
+
+
+def test_terminal_retention_prunes_complete_run_bundles(tmp_path: Path) -> None:
+    path = tmp_path / "retention.sqlite3"
+    with SQLiteSessionStore(path, max_turns_per_session=2) as store:
+        session = store.create_session("/workspace", session_id="retained-session")
+        run_ids: list[str] = []
+        revision_ids: list[str] = []
+        expected_head: str | None = None
+        for index in range(3):
+            run = store.start_run(
+                _request(
+                    session.session_id,
+                    idempotency_key=f"turn-{index}",
+                    expected_head=expected_head,
+                )
+            )
+            store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+            revision, _event = store.commit_terminal(
+                run.logical_run_id,
+                commit_kind="success",
+                payload=RevisionPayload(
+                    message_history=[{"turn": index}],
+                    display_projection=[{"type": "RUN_FINISHED", "turn": index}],
+                    terminal={"status": "completed", "output": f"answer-{index}"},
+                ),
+                terminal_status=LogicalRunStatus.completed,
+                event_type="RUN_FINISHED",
+            )
+            run_ids.append(run.logical_run_id)
+            revision_ids.append(revision.revision_id)
+            expected_head = revision.revision_id
+
+        assert store.get_run(run_ids[0]) is None
+        assert store.get_revision(revision_ids[0]) is None
+        assert store.get_run(run_ids[1]) is not None
+        assert store.get_run(run_ids[2]) is not None
+        assert store.get_session(session.session_id).head_revision_id == revision_ids[2]  # type: ignore[union-attr]
+        assert [event.payload["output"] for event in store.read_events(session.session_id)] == [
+            "answer-1",
+            "answer-2",
+        ]
+        for table in (
+            "logical_runs",
+            "executions",
+            "run_inputs",
+            "revisions",
+            "session_events",
+            "execution_checkpoints",
+            "action_batches",
+        ):
+            column = "logical_run_id"
+            count = store._connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {column} = ?",  # noqa: S608
+                (run_ids[0],),
+            ).fetchone()[0]
+            assert count == 0, table
+
+
+def test_session_retention_tombstones_then_purges_on_next_open(tmp_path: Path) -> None:
+    path = tmp_path / "session-retention.sqlite3"
+    session_ids = ["session-a", "session-b", "session-c"]
+    with SQLiteSessionStore(path, max_sessions=10) as store:
+        for session_id in session_ids:
+            store.create_session("/workspace", session_id=session_id)
+
+    with SQLiteSessionStore(path, max_sessions=2) as store:
+        active_ids = {session.session_id for session in store.list_sessions(limit=10)}
+        tombstoned_ids = {
+            session_id
+            for session_id in session_ids
+            if store.get_session(session_id) is not None and store.get_session(session_id).status.value == "tombstoned"  # type: ignore[union-attr]
+        }
+        assert len(active_ids) == 2
+        assert len(tombstoned_ids) == 1
+        purged_id = tombstoned_ids.pop()
+
+    with SQLiteSessionStore(path, max_sessions=2) as store:
+        assert store.get_session(purged_id) is None
+        assert len(store.list_sessions(limit=10)) == 2
+
+
+def test_age_retention_skips_session_with_nonterminal_main_run(tmp_path: Path) -> None:
+    now = datetime(2026, 1, 31, tzinfo=UTC)
+    stale_at = now - timedelta(days=31)
+    with SQLiteSessionStore(
+        tmp_path / "age-retention.sqlite3",
+        max_session_age_days=30,
+    ) as store:
+        quiescent = store.create_session("/workspace", session_id="quiescent")
+        running = store.create_session("/workspace", session_id="running")
+        active_run = store.start_run(_request(running.session_id))
+        store._connection.execute(
+            "UPDATE sessions SET updated_at = ? WHERE session_id IN (?, ?)",
+            (stale_at.isoformat(), quiescent.session_id, running.session_id),
+        )
+
+        result = store.run_maintenance(now=now)
+
+        assert result.tombstoned_sessions == 1
+        assert store.get_session(quiescent.session_id).status is SessionStatus.tombstoned  # type: ignore[union-attr]
+        assert store.get_session(running.session_id).status is SessionStatus.active  # type: ignore[union-attr]
+        assert store.get_run(active_run.logical_run_id) is not None
+
+
+def test_tombstone_and_purge_refuse_nonterminal_main_run(tmp_path: Path) -> None:
+    now = datetime(2026, 1, 31, tzinfo=UTC)
+    with SQLiteSessionStore(tmp_path / "main-run-safety.sqlite3") as store:
+        session = store.create_session("/workspace", session_id="running")
+        run = store.start_run(_request(session.session_id))
+
+        with pytest.raises(InvalidTransitionError, match="main run is nonterminal"):
+            store.tombstone_session(session.session_id)
+
+        store._connection.execute(
+            "UPDATE sessions SET status = ?, tombstoned_at = ?, updated_at = ? WHERE session_id = ?",
+            (SessionStatus.tombstoned.value, now.isoformat(), now.isoformat(), session.session_id),
+        )
+        result = store.run_maintenance(now=now)
+
+        assert result.purged_sessions == 0
+        assert store.get_session(session.session_id) is not None
+        assert store.get_run(run.logical_run_id) is not None
+        assert store.list_inputs(run.logical_run_id)
+
+
+def test_vacuum_is_explicitly_rate_limited(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sqlite_store_module, "_VACUUM_MIN_RECLAIM_BYTES", 0)
+    with SQLiteSessionStore(tmp_path / "vacuum.sqlite3") as store:
+        first = store.run_maintenance(force_vacuum=True)
+        second = store.run_maintenance()
+
+        assert first.vacuumed is True
+        assert second.vacuumed is False
+        marker = store._connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'retention_last_vacuum_at'"
+        ).fetchone()
+        assert marker is not None
+
+
+def test_automatic_vacuum_defers_when_another_writer_holds_the_database(tmp_path: Path) -> None:
+    path = tmp_path / "busy-vacuum.sqlite3"
+    now = datetime(2026, 1, 31, tzinfo=UTC)
+    with SQLiteSessionStore(path) as store, sqlite3.connect(path, isolation_level=None) as blocker:
+        session = store.create_session("/workspace")
+        blocker.execute("BEGIN IMMEDIATE")
+        try:
+            assert store._maybe_vacuum(now, force=True) is False
+        finally:
+            blocker.rollback()
+
+        assert store.get_session(session.session_id) == session
+        assert store._connection.execute("PRAGMA busy_timeout").fetchone()[0] == 30_000
 
 
 def test_events_are_ordered_idempotent_and_tombstone_fences_late_writes(tmp_path: Path) -> None:

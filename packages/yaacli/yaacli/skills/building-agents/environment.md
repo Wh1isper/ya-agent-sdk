@@ -194,6 +194,15 @@ SandboxEnvironment(
 
 A custom `Shell` implements `_create_process()` and returns an `ExecutionHandle`; it must not override the final `Shell.execute()` boundary. Runtime class creation rejects an `execute()` override with `TypeError`, so migrate legacy backends to `_create_process()` instead of bypassing ownership. The base class keeps foreground and background commands owned across cancellation and session reset, so each handle's `kill` callback must confirm termination or raise for retry.
 
+`Shell.start()` returns a model-facing session-local handle such as `process-1`.
+`wait_process()`, `kill_process()`, stdin, signal, status, notifications, and completion
+results all use that same handle. It is deliberately distinct from
+`ExecutionHandle.pid`, process-group IDs, container exec tokens, and durable host keys.
+Foreground commands keep private execution identities and do not consume process handle
+numbers. After a successful session reset the sequence starts again at `process-1`; a
+failed reset retains the old sequence until every prior execution is confirmed
+terminated.
+
 ## Environment Capabilities
 
 Environments contribute opaque Pydantic AI capabilities after entering. This keeps the

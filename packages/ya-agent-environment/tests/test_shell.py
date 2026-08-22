@@ -400,12 +400,22 @@ async def test_shell_default_cwd_always_in_allowed(tmp_path: Path) -> None:
 # =============================================================================
 
 
-async def test_start_returns_process_id() -> None:
-    """start() should return a non-empty process ID string."""
+async def test_start_returns_session_local_process_handle() -> None:
+    """start() should return a compact model-facing process handle."""
     shell = ConcreteShell(default_cwd=None)
-    pid = await shell.start("echo hello")
-    assert isinstance(pid, str)
-    assert len(pid) == 12
+    process_id = await shell.start("echo hello")
+    assert process_id == "process-1"
+    await shell.close()
+
+
+async def test_foreground_execution_does_not_consume_process_handles() -> None:
+    """Internal foreground execution IDs must not create gaps in public handles."""
+    shell = ConcreteShell(default_cwd=None)
+
+    await shell.execute("echo foreground")
+    process_id = await shell.start("echo background")
+
+    assert process_id == "process-1"
     await shell.close()
 
 
@@ -571,6 +581,7 @@ async def test_reset_background_processes_discards_all_session_work_and_reuses_s
     retained_pid = await shell.start("echo retained")
     await _wait_for_completed_results(shell, 1)
     buffered_pid = await shell.start("echo buffered")
+    assert (active_pid, retained_pid, buffered_pid) == ("process-1", "process-2", "process-3")
     await _wait_for_completed_buffer(shell, buffered_pid)
 
     assert active_pid in shell.active_background_processes
@@ -586,6 +597,7 @@ async def test_reset_background_processes_discards_all_session_work_and_reuses_s
             await shell.wait_process(process_id, timeout=0)
 
     reusable_pid = await shell.start("echo reusable")
+    assert reusable_pid == "process-1"
     stdout, _stderr, is_running, exit_code = await shell.wait_process(reusable_pid, timeout=1)
     assert "echo reusable" in stdout
     assert is_running is False
@@ -611,6 +623,7 @@ async def test_reset_background_processes_retains_failed_handle_for_retry() -> N
     assert process_id in shell.active_background_processes
     assert shell.has_background_activity is True
     assert 'status="termination-failed"' in (shell.background_status_summary() or "")
+    assert shell._generate_process_id() == "process-2"
 
     await shell.reset_background_processes()
 
@@ -618,6 +631,7 @@ async def test_reset_background_processes_retains_failed_handle_for_retry() -> N
     assert shell.has_background_activity is False
     assert shell._execution_handles == {}
     assert shell._background_cleanup_errors == {}
+    assert shell._generate_process_id() == "process-1"
     assert shell._background_processes == {}
     assert shell._output_buffers == {}
 
@@ -803,11 +817,11 @@ async def test_active_background_processes_returns_copy() -> None:
     assert not shell.has_active_background_processes
 
 
-async def test_generate_process_id_uniqueness() -> None:
-    """_generate_process_id should produce unique IDs."""
+async def test_generate_process_id_sequence() -> None:
+    """The private allocator should produce compact ordered handles."""
     shell = ConcreteShell(default_cwd=None)
-    ids = {shell._generate_process_id() for _ in range(100)}
-    assert len(ids) == 100
+    ids = [shell._generate_process_id() for _ in range(100)]
+    assert ids == [f"process-{number}" for number in range(1, 101)]
 
 
 async def test_background_process_metadata() -> None:
@@ -1997,6 +2011,31 @@ async def test_deferred_shell_resets_resolved_background_processes_without_reres
     assert running is False
     assert exit_code == 0
     assert shell.resolve_count == 1
+
+
+async def test_deferred_shell_failed_composite_reset_does_not_reuse_handle() -> None:
+    """A proxy failure must prevent the resolved shell from reusing its sequence."""
+    concrete = RetryKillShell()
+    shell = DeferredShellFixture(concrete)
+    first_process = await shell.start("background")
+    execute_task = asyncio.create_task(shell.execute("foreground"))
+    while not shell._foreground_tasks:
+        await asyncio.sleep(0)
+
+    with pytest.raises(ShellBackgroundResetError):
+        await shell.reset_background_processes()
+
+    with pytest.raises(RuntimeError, match="transient kill failure"):
+        await execute_task
+    assert first_process == "process-1"
+    second_process = await shell.start("next background")
+    assert second_process == "process-2"
+
+    await shell.reset_background_processes()
+
+    reset_process = await shell.start("after successful reset")
+    assert reset_process == "process-1"
+    await shell.reset_background_processes()
 
 
 async def test_deferred_shell_routes_retained_status_and_wait() -> None:

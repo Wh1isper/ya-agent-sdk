@@ -84,7 +84,7 @@ def test_create_worktree_auto_branch(tmp_path: Path) -> None:
 
     with (
         patch("yaacli.cli._get_git_root", return_value=repo),
-        patch("yaacli.cli.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
+        patch("yaacli.config.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
     ):
         worktree_dir, branch_name, is_resume = _create_worktree(None)
 
@@ -121,7 +121,7 @@ def test_create_worktree_custom_branch(tmp_path: Path) -> None:
 
     with (
         patch("yaacli.cli._get_git_root", return_value=repo),
-        patch("yaacli.cli.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
+        patch("yaacli.config.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
     ):
         worktree_dir, branch_name, is_resume = _create_worktree("my-feature")
 
@@ -165,7 +165,7 @@ def test_create_worktree_resume_existing(tmp_path: Path) -> None:
 
     with (
         patch("yaacli.cli._get_git_root", return_value=repo),
-        patch("yaacli.cli.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
+        patch("yaacli.config.ConfigManager.DEFAULT_CONFIG_DIR", config_dir),
     ):
         worktree_dir, branch_name, is_resume = _create_worktree("my-branch")
 
@@ -210,7 +210,7 @@ def test_cli_worktree_not_in_repo(tmp_path: Path) -> None:
     runner = CliRunner()
     with (
         patch("yaacli.cli._get_git_root", return_value=None),
-        patch("yaacli.cli.ConfigManager.load", return_value=MagicMock(is_configured=True, env={})),
+        patch("yaacli.config.ConfigManager.load", return_value=MagicMock(is_configured=True, env={})),
         patch("yaacli.cli.ensure_builtin_assets"),
         patch("yaacli.cli.load_env_from_config"),
     ):
@@ -224,7 +224,7 @@ def test_cli_branch_implies_worktree(tmp_path: Path) -> None:
     runner = CliRunner()
     with (
         patch("yaacli.cli._get_git_root", return_value=None),
-        patch("yaacli.cli.ConfigManager.load", return_value=MagicMock(is_configured=True, env={})),
+        patch("yaacli.config.ConfigManager.load", return_value=MagicMock(is_configured=True, env={})),
         patch("yaacli.cli.ensure_builtin_assets"),
         patch("yaacli.cli.load_env_from_config"),
     ):

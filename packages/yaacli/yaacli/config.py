@@ -30,19 +30,20 @@ from __future__ import annotations
 import tomllib
 from importlib import resources
 from pathlib import Path
-from typing import Any, Literal, Self, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Self, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from ya_agent_sdk.capabilities import (
-    CapabilityPluginManifest,
-    ResolvedCapabilityPlugins,
-    load_capability_plugins,
-    resolve_capability_plugins,
-)
-from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig, load_mcp_config_file
 
 from yaacli.theme import ThemePreference
+
+if TYPE_CHECKING:
+    from ya_agent_sdk.capabilities import ResolvedCapabilityPlugins
+    from ya_agent_sdk.mcp import MCPConfig, MCPServerConfig
+
+    _MCPConfigReturn = MCPConfig
+else:
+    _MCPConfigReturn = Any
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 
@@ -63,6 +64,20 @@ __all__ = [
     "get_config_manager",
     "load_config",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily preserve the historical MCP type aliases."""
+    if name in {"MCPConfig", "MCPServerConfig"}:
+        from ya_agent_sdk import mcp
+
+        return mcp.MCPConfig if name == "MCPConfig" else mcp.MCPServerConfig
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})
+
 
 # =============================================================================
 # Configuration Models
@@ -340,6 +355,15 @@ class SessionConfig(_StrictConfigModel):
     auto_restore: bool = False
     """Restore the newest session for the current workspace on TUI startup."""
 
+    max_turns_per_session: PositiveInt = 20
+    """Maximum terminal turn bundles retained per session."""
+
+    max_sessions: PositiveInt = 100
+    """Maximum active sessions retained across workspaces."""
+
+    max_session_age_days: PositiveInt | None = None
+    """Optional age limit for inactive sessions. ``None`` disables age pruning."""
+
 
 class OAuthRefreshConfig(_StrictConfigModel):
     """OAuth proactive refresh configuration."""
@@ -434,6 +458,9 @@ class EnvSettings(BaseSettings):
     session_dir: str | None = None
     database_path: str | None = None
     auto_restore: bool | None = None
+    max_turns_per_session: PositiveInt | None = None
+    max_sessions: PositiveInt | None = None
+    max_session_age_days: PositiveInt | None = None
 
     # OAuth refresh
     oauth_refresh_enabled: bool | None = None
@@ -568,6 +595,12 @@ class ConfigManager:
             session["database_path"] = env.database_path
         if env.auto_restore is not None:
             session["auto_restore"] = env.auto_restore
+        if env.max_turns_per_session is not None:
+            session["max_turns_per_session"] = env.max_turns_per_session
+        if env.max_sessions is not None:
+            session["max_sessions"] = env.max_sessions
+        if env.max_session_age_days is not None:
+            session["max_session_age_days"] = env.max_session_age_days
         if session:
             overrides["session"] = session
 
@@ -586,7 +619,7 @@ class ConfigManager:
 
         return overrides
 
-    def load_mcp_config(self) -> MCPConfig | None:
+    def load_mcp_config(self) -> _MCPConfigReturn | None:
         """Load MCP configuration from mcp.json.
 
         Project config takes priority over global config (no merging).
@@ -594,6 +627,8 @@ class ConfigManager:
         Returns:
             MCPConfig if found, None otherwise.
         """
+        from ya_agent_sdk.mcp import load_mcp_config_file
+
         # Check project first
         project_mcp = self._project_dir / self.PROJECT_CONFIG_DIR / "mcp.json"
         if project_mcp.exists():
@@ -623,6 +658,12 @@ class ConfigManager:
 
     def load_capability_plugin_config(self) -> ResolvedCapabilityPlugins:
         """Load the global plugin manifest or return one empty SDK catalog snapshot."""
+        from ya_agent_sdk.capabilities import (
+            CapabilityPluginManifest,
+            load_capability_plugins,
+            resolve_capability_plugins,
+        )
+
         manifest_path = self.capability_plugin_manifest_path
         try:
             return load_capability_plugins(manifest_path)

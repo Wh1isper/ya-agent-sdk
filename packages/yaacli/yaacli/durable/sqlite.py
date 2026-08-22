@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 from pydantic import JsonValue
-from ya_agent_sdk.subagents.spec import SubagentExecutionRecord
+from ya_agent_sdk.subagents.spec import SubagentExecutionRecord, SubagentExecutionState, SubagentInputState
 
 from yaacli.durable.models import (
     ActionBatch,
@@ -44,7 +46,14 @@ from yaacli.durable.store import (
     TombstonedSessionError,
 )
 
+logger = logging.getLogger(__name__)
+
 _SCHEMA_VERSION = 5
+_DEFAULT_MAX_TURNS_PER_SESSION = 20
+_DEFAULT_MAX_SESSIONS = 100
+_VACUUM_MIN_INTERVAL = timedelta(days=7)
+_VACUUM_MIN_RECLAIM_BYTES = 8 * 1024 * 1024
+_VACUUM_BUSY_TIMEOUT_MS = 100
 _TERMINAL_RUN_STATES = {
     LogicalRunStatus.completed,
     LogicalRunStatus.failed,
@@ -226,13 +235,40 @@ CREATE INDEX IF NOT EXISTS action_items_batch_idx
 _SCHEMA += SUBAGENT_SCHEMA
 
 
+@dataclass(frozen=True, slots=True)
+class StoreMaintenanceResult:
+    """Observable result of one bounded retention and SQLite maintenance pass."""
+
+    pruned_turns: int = 0
+    purged_sessions: int = 0
+    tombstoned_sessions: int = 0
+    pruned_descriptors: int = 0
+    vacuumed: bool = False
+
+
 class SQLiteSessionStore:
     """Transactional SQLite product truth for sessions and logical runs."""
 
-    def __init__(self, database_path: Path | str) -> None:
+    def __init__(
+        self,
+        database_path: Path | str,
+        *,
+        max_turns_per_session: int = _DEFAULT_MAX_TURNS_PER_SESSION,
+        max_sessions: int = _DEFAULT_MAX_SESSIONS,
+        max_session_age_days: int | None = None,
+    ) -> None:
+        if max_turns_per_session <= 0:
+            raise ValueError("max_turns_per_session must be positive")
+        if max_sessions <= 0:
+            raise ValueError("max_sessions must be positive")
+        if max_session_age_days is not None and max_session_age_days <= 0:
+            raise ValueError("max_session_age_days must be positive when configured")
         path = Path(database_path).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.max_turns_per_session = max_turns_per_session
+        self.max_sessions = max_sessions
+        self.max_session_age_days = max_session_age_days
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(
             path,
@@ -248,6 +284,9 @@ class SQLiteSessionStore:
                 self._connection.execute("PRAGMA journal_mode = WAL")
                 self._connection.execute("PRAGMA synchronous = FULL")
                 self._connection.execute("PRAGMA busy_timeout = 30000")
+            maintenance = self.run_maintenance()
+            if maintenance != StoreMaintenanceResult():
+                logger.info("SQLite maintenance completed: %s", maintenance)
         except BaseException:
             self._connection.close()
             raise
@@ -304,6 +343,216 @@ class SQLiteSessionStore:
             else:
                 self._connection.commit()
 
+    def run_maintenance(
+        self,
+        *,
+        now: datetime | None = None,
+        force_vacuum: bool = False,
+    ) -> StoreMaintenanceResult:
+        """Apply bounded retention, descriptor GC, WAL checkpointing, and optional vacuum."""
+        maintenance_time = now or utc_now()
+        with self._write() as connection:
+            purged_sessions = self._purge_tombstoned_sessions(connection)
+            pruned_turns = self._prune_all_session_turns(connection)
+            tombstoned_sessions = self._tombstone_expired_sessions(connection, maintenance_time)
+            pruned_descriptors = self._prune_unreferenced_subagent_descriptors(connection)
+
+        with self._lock:
+            self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            vacuumed = self._maybe_vacuum(maintenance_time, force=force_vacuum)
+        return StoreMaintenanceResult(
+            pruned_turns=pruned_turns,
+            purged_sessions=purged_sessions,
+            tombstoned_sessions=tombstoned_sessions,
+            pruned_descriptors=pruned_descriptors,
+            vacuumed=vacuumed,
+        )
+
+    def _prune_all_session_turns(self, connection: sqlite3.Connection) -> int:
+        session_rows = connection.execute(
+            "SELECT session_id FROM sessions WHERE status = ?",
+            (SessionStatus.active.value,),
+        ).fetchall()
+        return sum(self._prune_session_turns(connection, row["session_id"]) for row in session_rows)
+
+    def _prune_session_turns(self, connection: sqlite3.Connection, session_id: str) -> int:
+        session = self._required_session(connection, session_id)
+        rows = connection.execute(
+            """
+            SELECT lr.logical_run_id, r.revision_id
+            FROM logical_runs AS lr
+            JOIN revisions AS r ON r.logical_run_id = lr.logical_run_id
+            WHERE lr.session_id = ?
+              AND lr.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+            ORDER BY r.created_at DESC, r.revision_id DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        retained_run_ids = {row["logical_run_id"] for row in rows[: self.max_turns_per_session]}
+        if session.head_revision_id is not None:
+            retained_run_ids.update(
+                row["logical_run_id"] for row in rows if row["revision_id"] == session.head_revision_id
+            )
+        candidates = [row["logical_run_id"] for row in rows if row["logical_run_id"] not in retained_run_ids]
+        self._delete_run_bundles(connection, candidates)
+        return len(candidates)
+
+    @staticmethod
+    def _delete_run_bundles(connection: sqlite3.Connection, logical_run_ids: Sequence[str]) -> None:
+        for logical_run_id in logical_run_ids:
+            connection.execute(
+                "DELETE FROM action_items WHERE batch_id IN "
+                "(SELECT batch_id FROM action_batches WHERE logical_run_id = ?)",
+                (logical_run_id,),
+            )
+            connection.execute("DELETE FROM action_batches WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM session_events WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM execution_checkpoints WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM run_inputs WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM revisions WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM executions WHERE logical_run_id = ?", (logical_run_id,))
+            connection.execute("DELETE FROM logical_runs WHERE logical_run_id = ?", (logical_run_id,))
+
+    def _purge_tombstoned_sessions(self, connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            "SELECT session_id FROM sessions WHERE status = ? ORDER BY tombstoned_at, session_id",
+            (SessionStatus.tombstoned.value,),
+        ).fetchall()
+        purged = 0
+        for row in rows:
+            session_id = row["session_id"]
+            if not self._session_is_quiescent(connection, session_id):
+                continue
+            run_rows = connection.execute(
+                "SELECT logical_run_id FROM logical_runs WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            self._delete_run_bundles(connection, [run["logical_run_id"] for run in run_rows])
+            connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
+            connection.execute(
+                "DELETE FROM subagent_inputs WHERE execution_id IN "
+                "(SELECT execution_id FROM subagent_executions WHERE owner_scope_id = ?)",
+                (session_id,),
+            )
+            connection.execute("DELETE FROM subagent_executions WHERE owner_scope_id = ?", (session_id,))
+            connection.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            purged += 1
+        return purged
+
+    def _tombstone_expired_sessions(self, connection: sqlite3.Connection, now: datetime) -> int:
+        rows = connection.execute(
+            """
+            SELECT * FROM sessions
+            WHERE status = ?
+            ORDER BY updated_at DESC, session_id
+            """,
+            (SessionStatus.active.value,),
+        ).fetchall()
+        excess_ids = {row["session_id"] for row in rows[self.max_sessions :]}
+        cutoff = now - timedelta(days=self.max_session_age_days) if self.max_session_age_days is not None else None
+        if cutoff is not None:
+            excess_ids.update(row["session_id"] for row in rows if _parse_required_dt(row["updated_at"]) < cutoff)
+
+        tombstoned = 0
+        for row in reversed(rows):
+            session_id = row["session_id"]
+            if session_id not in excess_ids or not self._session_is_quiescent(connection, session_id):
+                continue
+            self._fence_subagents_for_tombstone(connection, session_id=session_id, now=now)
+            connection.execute(
+                """
+                UPDATE sessions
+                SET status = ?, tombstoned_at = ?, updated_at = ?
+                WHERE session_id = ? AND status = ?
+                """,
+                (
+                    SessionStatus.tombstoned.value,
+                    _dt(now),
+                    _dt(now),
+                    session_id,
+                    SessionStatus.active.value,
+                ),
+            )
+            tombstoned += 1
+        return tombstoned
+
+    @staticmethod
+    def _session_has_nonterminal_main_run(connection: sqlite3.Connection, session_id: str) -> bool:
+        row = connection.execute(
+            """
+            SELECT 1 FROM logical_runs
+            WHERE session_id = ?
+              AND status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        return row is not None
+
+    @classmethod
+    def _session_is_quiescent(cls, connection: sqlite3.Connection, session_id: str) -> bool:
+        if cls._session_has_nonterminal_main_run(connection, session_id):
+            return False
+        child_rows = connection.execute(
+            "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ?",
+            (session_id,),
+        ).fetchall()
+        return all(SubagentExecutionRecord.model_validate_json(row["record_json"]).terminal for row in child_rows)
+
+    @staticmethod
+    def _prune_unreferenced_subagent_descriptors(connection: sqlite3.Connection) -> int:
+        rows = connection.execute("SELECT record_json FROM subagent_executions").fetchall()
+        referenced = {SubagentExecutionRecord.model_validate_json(row["record_json"]).descriptor_id for row in rows}
+        if referenced:
+            placeholders = ",".join("?" for _ in referenced)
+            cursor = connection.execute(
+                f"DELETE FROM subagent_plan_descriptors WHERE descriptor_id NOT IN ({placeholders})",  # noqa: S608
+                tuple(sorted(referenced)),
+            )
+        else:
+            cursor = connection.execute("DELETE FROM subagent_plan_descriptors")
+        return cursor.rowcount
+
+    def _maybe_vacuum(self, now: datetime, *, force: bool) -> bool:
+        page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
+        free_pages = int(self._connection.execute("PRAGMA freelist_count").fetchone()[0])
+        if not force and free_pages * page_size < _VACUUM_MIN_RECLAIM_BYTES:
+            return False
+        row = self._connection.execute(
+            "SELECT value FROM schema_metadata WHERE key = 'retention_last_vacuum_attempt_at'"
+        ).fetchone()
+        if not force and row is not None:
+            last_attempt = datetime.fromisoformat(row["value"])
+            if now - last_attempt < _VACUUM_MIN_INTERVAL:
+                return False
+
+        previous_timeout_ms = int(self._connection.execute("PRAGMA busy_timeout").fetchone()[0])
+        try:
+            self._connection.execute(f"PRAGMA busy_timeout = {_VACUUM_BUSY_TIMEOUT_MS}")
+            self._connection.execute(
+                """
+                INSERT INTO schema_metadata(key, value) VALUES('retention_last_vacuum_attempt_at', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (_dt(now),),
+            )
+            self._connection.execute("VACUUM")
+            self._connection.execute(
+                """
+                INSERT INTO schema_metadata(key, value) VALUES('retention_last_vacuum_at', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (_dt(now),),
+            )
+        except sqlite3.OperationalError as exc:
+            if exc.sqlite_errorcode & 0xFF not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                raise
+            logger.info("SQLite VACUUM deferred because the database is busy")
+            return False
+        finally:
+            self._connection.execute(f"PRAGMA busy_timeout = {previous_timeout_ms}")
+        return True
+
     def create_session(
         self,
         workspace_ref: str,
@@ -359,6 +608,8 @@ class SQLiteSessionStore:
             session = self._session_from_row(row)
             if session.status is SessionStatus.tombstoned:
                 return session
+            if self._session_has_nonterminal_main_run(connection, session_id):
+                raise InvalidTransitionError(f"Cannot tombstone session {session_id!r} while a main run is nonterminal")
             self._fence_subagents_for_tombstone(
                 connection,
                 session_id=session_id,
@@ -395,14 +646,26 @@ class SQLiteSessionStore:
             record = SubagentExecutionRecord.model_validate_json(row["record_json"])
             if record.terminal:
                 continue
+            cancelled = record.model_copy(
+                update={
+                    "state": SubagentExecutionState.cancelled,
+                    "input_state": (
+                        SubagentInputState.applied
+                        if record.input_state is SubagentInputState.applied
+                        else SubagentInputState.rejected
+                    ),
+                    "error": reason,
+                    "completed_at": now,
+                }
+            )
             connection.execute(
                 """
                 UPDATE subagent_executions
-                SET input_open = 0, cancel_requested = 1,
+                SET record_json = ?, input_open = 0, cancel_requested = 1,
                     cancellation_reason = ?, updated_at = ?
                 WHERE execution_id = ?
                 """,
-                (reason, _dt(now), record.execution_id),
+                (cancelled.model_dump_json(), reason, _dt(now), record.execution_id),
             )
             connection.execute(
                 """
@@ -890,7 +1153,9 @@ class SQLiteSessionStore:
                 "UPDATE sessions SET head_revision_id = ?, updated_at = ? WHERE session_id = ?",
                 (revision_id, _dt(now), session_id),
             )
-            return self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
+            revision = self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
+            self._prune_session_turns(connection, session_id)
+            return revision
 
     def commit_revision(
         self,
@@ -967,6 +1232,11 @@ class SQLiteSessionStore:
             revision = self._revision_from_row(existing)
             if self._revision_payload(revision) != payload:
                 raise ValueError("Terminal revision idempotency key has different payload")
+            connection.execute(
+                "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+                (logical_run_id,),
+            )
+            self._prune_session_turns(connection, run.session_id)
             return revision
         if terminal_status not in _RUN_TRANSITIONS[run.status]:
             raise InvalidTransitionError(f"Cannot transition run from {run.status.value} to {terminal_status.value}")
@@ -1040,7 +1310,13 @@ class SQLiteSessionStore:
             """,
             (terminal_status.value, _dt(now), run.execution_id),
         )
-        return self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
+        connection.execute(
+            "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+            (logical_run_id,),
+        )
+        revision = self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
+        self._prune_session_turns(connection, run.session_id)
+        return revision
 
     def get_revision(self, revision_id: str) -> RevisionRecord | None:
         with self._lock:
