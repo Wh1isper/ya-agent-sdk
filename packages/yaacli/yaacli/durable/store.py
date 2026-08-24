@@ -20,6 +20,7 @@ from yaacli.durable.models import (
     RevisionPayload,
     RevisionRecord,
     SessionRecord,
+    SessionSummary,
     StartRunRequest,
 )
 
@@ -47,6 +48,8 @@ class SessionStore(Protocol):
     def get_session(self, session_id: str) -> SessionRecord | None: ...
 
     def list_sessions(self, *, limit: int = 100) -> tuple[SessionRecord, ...]: ...
+
+    def get_session_summary(self, session_id: str) -> SessionSummary | None: ...
 
     def tombstone_session(self, session_id: str) -> SessionRecord: ...
 

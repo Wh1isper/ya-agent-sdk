@@ -2,356 +2,303 @@
 
 ## Scope
 
-YAACLI stores product sessions in one transactional SQLite `SessionStore`. Each user
-turn is a logical run executed by `LocalExecutionCoordinator` through the SDK's
-host-neutral `AgentExecutionHarness`.
+YAACLI uses one hybrid session store:
 
-The product store is the sole durable source of truth for:
+- SQLite owns transactional product metadata and small coordination records.
+- Deterministic JSON files own revision, checkpoint, and subagent state that can grow
+  with model history or tool output.
+- `LocalExecutionCoordinator` composes this store with the SDK's host-neutral
+  `AgentExecutionHarness`.
 
-- sessions and immutable head revisions;
-- content-addressed runtime descriptors;
-- logical runs, process-owned executions, and stable segment checkpoints;
-- ordered run input;
-- retryable outbox commands;
+There is no workflow-engine database, artifact catalog, content-addressed payload
+layer, dual-read compatibility path, or replay engine.
+
+The SDK execution harness remains stateless across native segments. YAACLI, as the
+host, persists both Pydantic AI message history and the SDK `ResumableState`; neither
+is reconstructed from the other.
+
+## Storage Layout
+
+The default layout is:
+
+```text
+~/.yaacli/sessions/
+  sessions-v2.sqlite3
+  <session-id>/
+    revisions/<revision-id>/state.json
+    checkpoints/<execution-id>/state.json
+    subagents/<execution-id>/state.json
+```
+
+`[session] session_dir` changes the default directory. An explicit
+`[session] database_path` remains authoritative, and state directories are placed next
+to that database. The database filename remains `sessions-v2.sqlite3`; this file-state
+cutover does not introduce a v3 database.
+
+Every `state.json` is UTF-8, pretty-printed, and written with `ensure_ascii=False`, so
+agents and users can inspect history directly with ordinary tools such as `rg`, `jq`,
+and `less`.
+
+### SQLite ownership
+
+SQLite retains:
+
+- schema metadata;
+- sessions;
+- logical runs and process-owned executions;
+- revision metadata, counts, and bounded input/output previews;
+- checkpoint identity and segment metadata;
+- ordered run inputs;
 - HITL action batches and decisions;
-- canonical message/context/input snapshots;
-- bounded display projections, usage, and terminal outcomes;
-- process-local subagent records and steering input; and
 - ordered session events.
 
-There is no separate workflow-engine store and no replay engine.
+`run_inputs.content_json`, action payloads, and event payloads remain in SQLite because
+they are bounded transaction-critical coordination data.
+
+SQLite does not contain revision message/context payloads, checkpoint payloads,
+subagent descriptors, subagent records, child history, child usage, or child inbox
+payloads.
+
+### File ownership
+
+A revision file is a versioned, self-contained `RevisionRecord`. It includes canonical
+Pydantic AI messages, `ResumableState`, the logical-run input ledger, bounded display
+projection, usage, terminal metadata, revision identity, parent identity, and creation
+time.
+
+A checkpoint file is a versioned, self-contained `ExecutionCheckpointRecord`, including
+the complete revision payload and deferred requests when suspended.
+
+A subagent file is a versioned, self-contained document containing:
+
+- the exact `SubagentPlanDescriptor`;
+- the complete `SubagentExecutionRecord`;
+- persisted child inputs and their transitions;
+- input-open and cancellation fences;
+- the owning process ID plus a unique process-generation token backed by a process-held
+  filesystem lock, used to distinguish dead-process orphans from children owned by
+  another live terminal; and
+- creation and update timestamps.
+
+Each child owns a separate file. Concurrent children never read-modify-write one shared
+session document.
 
 ## Data Model
 
 ```mermaid
 flowchart TB
-    Session[SessionRecord]
-    Revision[RevisionRecord]
-    Descriptor[RuntimeDescriptor]
-    Run[LogicalRunRecord]
-    Execution[ExecutionRecord]
-    Checkpoint[ExecutionCheckpointRecord]
-    Input[InputRecord]
-    Action[ActionBatch and ActionItem]
-    Event[EventRecord]
-    Outbox[OutboxCommand]
+    Session[SQLite session metadata]
+    Run[SQLite logical run]
+    Execution[SQLite execution]
+    Input[SQLite run input]
+    Action[SQLite action batch and items]
+    Event[SQLite session event]
+    RevisionMeta[SQLite revision metadata]
+    CheckpointMeta[SQLite checkpoint metadata]
 
-    Session -->|head_revision_id| Revision
-    Session -->|active_execution_id| Execution
+    RevisionFile[Revision state.json]
+    CheckpointFile[Checkpoint state.json]
+    ChildFile[Subagent state.json]
+
+    Session -->|head_revision_id| RevisionMeta
     Run --> Session
-    Run --> Descriptor
     Run --> Execution
-    Execution --> Checkpoint
     Run --> Input
     Run --> Action
-    Run --> Revision
     Session --> Event
-    Outbox --> Execution
+    Run --> RevisionMeta
+    Execution --> CheckpointMeta
+    RevisionMeta -. deterministic identity .-> RevisionFile
+    CheckpointMeta -. deterministic identity .-> CheckpointFile
+    Session -. owner scope .-> ChildFile
 ```
 
-### Session and revision
+Paths are derived from typed identities; SQLite stores no file path columns.
+
+## Publication and Durability
+
+Large state uses file-first publication:
+
+1. serialize the complete typed state;
+2. create a temporary file in the destination directory;
+3. flush and `fsync` the temporary file;
+4. atomically replace `state.json` with `os.replace`;
+5. `fsync` the parent directory; and
+6. publish metadata, head, run status, input fences, and terminal event in SQLite.
+
+A crash before the SQLite commit can leave an orphan file, but SQLite never publishes
+a revision or checkpoint whose file was not already installed. Session directories
+carry an explicit YAACLI ownership marker; startup maintenance locks and re-reads one
+marked session at a time before removing its orphans. Unmarked sibling directories are
+never claimed or deleted.
+
+Retention uses the reverse order: commit metadata deletion first, then remove the now
+unreferenced files. A failed file deletion therefore leaves only an orphan, which a
+later maintenance pass can remove.
+
+Revision files are immutable after publication. Checkpoint and subagent files use
+atomic replacement for each stable transition. A staged checkpoint temporarily retains
+the previous committed checkpoint in the same document, so a failed SQLite metadata
+advance still reads the committed segment; the backup is removed after a successful
+metadata commit.
+
+## Session and Revision
 
 A session has a stable ID, workspace reference, active/tombstoned status, one committed
-head revision, and at most one active execution. Listing reads bounded metadata only.
+head revision, and timestamps. Session list/show projections read only SQLite metadata;
+they do not load message history merely to compute counts or previews.
 
-A terminal revision atomically stores canonical Pydantic AI message history,
-`ResumableState`, logical-run input ledger, bounded display projection, usage, terminal
-metadata, and parent revision identity. Publication uses compare-and-swap against the
-run's expected head.
+Every successful, failed, cancelled, or interrupted logical run publishes one terminal
+revision. Revision metadata insertion, session-head publication, run/execution terminal
+state, unresolved input rejection, checkpoint metadata deletion, and the canonical
+terminal event share one SQLite transaction. Repeated publication with the same logical
+identity and payload is idempotent.
 
-Revision insertion, head advance, run/execution terminal state, active execution
-release, and ordered terminal event are one transaction. Repeated publication with the
-same terminal identity is idempotent.
+`/dump`, `/load`, TUI restore, and headless restore load the complete revision file.
+Current runtime and environment policy remain authoritative; persisted context cannot
+weaken current capability, filesystem, shell, or approval policy.
 
-### Runtime descriptor
-
-Every run references an immutable, content-addressed `RuntimeDescriptor`. It contains
-the native agent spec, complete host behavior envelope, main/child plan manifests,
-full plan fingerprint, and executable version.
-
-The executable version hashes participating first-party code and package/native assets,
-critical dependency versions, and Python/compiler/platform metadata. YAACLI has one
-executable identity; it does not maintain workflow/application version aliases.
-
-Worker startup enters only the active model profile. Other configured profile plans
-remain process-local build specifications and are entered asynchronously on first
-selection, then cached for the process lifetime. Shutdown exits only runtimes that were
-actually entered. A persisted run executes only when its descriptor ID, full plan
-fingerprint, behavior payload, and executable identity match the registered plan.
-Falling back to a current profile, current child route, or similar-looking plan is
-forbidden.
-
-### Logical run, execution, and checkpoint
-
-A logical run records session ownership, expected head, descriptor, state,
-cancellation, and pending action identity. An execution records process ownership and
-exact descriptor/executable identity.
+## Logical Runs, Inputs, Checkpoints, and HITL
 
 Run states are `pending`, `running`, `suspended`, `cancelling`, `completed`, `failed`,
 `cancelled`, and `interrupted`.
 
-`ExecutionCheckpointRecord` stores the latest completed native segment boundary:
-canonical messages, resumable state, input ledger, usage, projection, segment index and
-status, plus deferred requests when suspended. A checkpoint does not advance the
-session head.
+A checkpoint records only a completed or suspended native segment boundary. It does not
+advance the session head. Deferred continuation restores the complete checkpoint file,
+including message history and `ResumableState`, then applies audited
+`DeferredToolResults`.
 
-## Application and Coordinator Boundary
+Additional user and feature input is stored before acknowledgement. Input states are
+`accepted`, `enqueued`, `applied`, and `rejected`. `DurableInboxPumpCapability` applies
+persisted rows through Pydantic AI's native enqueue mechanism. The terminal input fence
+requires every accepted/enqueued row to become applied or rejected before publication.
 
-`SessionApplicationService` depends on `SessionExecutionCoordinator`, whose operations
-are:
+A native `DeferredToolRequests` result creates a transactionally persisted action batch.
+Each decision has stable identity, actor, timestamp, and typed payload. A partial batch
+remains pending; a completed batch wakes continuation from the stable checkpoint.
+Process-local events are wake optimizations, never durable truth.
 
-- `dispatch_outbox()`;
-- `wait(logical_run_id)`; and
-- `cancel(logical_run_id, reason)`.
+## Local Execution and Restart
 
-TUI and headless frontends use the same service. `LocalExecutionWorker` owns the lazy
-profile build catalog, entered-runtime cache, and one `LocalExecutionCoordinator`; it
-is not itself product state. A profile becomes active only after its runtime enters
-successfully, so failed lazy activation leaves the previous profile authoritative.
+The coordinator creates a fresh `TUIContext` for each native segment. It restores either
+the expected head revision for a new turn or the latest checkpoint for continuation,
+then calls the SDK execution harness.
 
-Starting a turn is one product transaction:
+The coordinator persists every stable checkpoint before terminal commit or HITL wait.
+Usage limits remain cumulative across continuation segments. Runtime locks cover only a
+native segment and are released before waiting for actions.
 
-1. validate the current head and active-session state;
-2. persist the exact descriptor;
-3. create logical run and execution identities;
-4. store order-zero structured input;
-5. set the session's active execution; and
-6. enqueue an idempotent `start_execution` command.
+YAACLI never replays an arbitrary in-flight graph segment after restart:
 
-The application then requests outbox dispatch. If delivery fails, the command remains
-retryable. Worker startup releases stale delivery claims, drains available commands,
-and starts a supervised delayed-retry loop.
+- pending accepted work remains dispatchable;
+- cancelling runs settle as cancelled;
+- process-owned running or suspended runs settle as interrupted;
+- interrupted publication uses the latest stable checkpoint when available; and
+- a later user continuation is a new logical run from the published head.
 
-## Segment Execution
-
-The coordinator creates a fresh `TUIContext` for each segment while reusing the entered
-immutable runtime plan. It restores the expected head for a new turn, or the latest
-segment checkpoint for deferred continuation.
-
-It invokes:
-
-```python
-AgentExecutionHarness.stream_segment(runtime, AgentSegmentRequest(...))
-```
-
-The harness returns either:
-
-- `completed`, with terminal output; or
-- `suspended`, with exact native `DeferredToolRequests`.
-
-After every stable boundary the coordinator persists the checkpoint before terminal
-commit or HITL waiting. Usage limits are cumulative across continuation segments.
-
-A runtime plan has one lock because the entered `AgentRuntime` is shared. The lock is
-held only during a native segment. It is released before waiting for actions, so one
-suspended session cannot block another session using the same descriptor.
-
-Live `StreamEvent` values are sent directly to the frontend event sink. They remain
-transient until a stable segment boundary or a controlled terminal recovery snapshot
-publishes the safe recoverable subset.
-
-## Active Input and Terminal Fence
-
-Additional user or feature input is committed as ordered `InputRecord` state before a
-wake command is delivered. States are `accepted`, `enqueued`, `applied`, and `rejected`.
-
-The database row is canonical. `notify_input` is only a wake/correlation command.
-`DurableInboxPumpCapability` drains rows at native graph boundaries and calls native
-`ctx.enqueue()` while the segment is bound. One product input is enqueued at most once
-per native segment attempt; an unresolved row may be retried once in a later attempt.
-Native enqueue-application events reconcile both the product row and `RunInputLedger`
-through the recorded attempt ledger rather than a mutable latest-ID race. The execution
-coordinator performs this reconciliation before host display projection and before a
-later model failure can fence unresolved input.
-
-At terminal boundaries the store closes ingress. Every previously accepted input must
-be applied or rejected with a reason before terminal publication. On controlled failure,
-cancellation, or worker shutdown, the coordinator captures the active segment's SDK
-`recoverable_messages()`, resumable state, input ledger, usage, and bounded display
-projection before releasing process-local state. This terminal recovery snapshot keeps
-the submitted prompt and safe text-only partial assistant output. Completed tool calls
-remain visible; incomplete tool calls are excluded and are never replayed.
-
-A terminal recovery snapshot is not an execution checkpoint and cannot resume the old
-segment. The old logical run remains terminal, and a later user continuation is a new
-logical run from the published revision. Unresolved steering is rejected and removed
-from resumable native input while identity-keyed `steering_accepted` and
-`steering_applied` UI facts retain their existing durable fence. If recovery capture
-fails, or no process-local segment survives, terminal publication falls back to the
-latest stable checkpoint. The merged terminal projection passes through the same
-per-event, event-count, run-count, and byte budgets as live display replay; retained
-applied facts never outlive their accepted receipt. Late writes to a closed, cancelling,
-terminal, or tombstoned run fail explicitly.
-
-See [04-steering.md](04-steering.md).
-
-## HITL Suspension
-
-A native `DeferredToolRequests` output becomes one action batch with exact approval and
-external-result items. The run transitions to `suspended` and the coordinator waits on
-a process-local event only after the checkpoint and action state are durable.
-
-Each decision has its own idempotency identity, actor, timestamp, and typed payload. A
-partial batch remains pending. Once all items resolve, `notify_action` wakes the task;
-the coordinator reconstructs matching `DeferredToolResults` and begins the next
-segment from the checkpoint.
-
-Interactive policy presents actions. Headless policy either waits or records explicit
-denials. An `asyncio.Event` is a wake optimization, never durable truth.
-
-## Crash and Restart
-
-YAACLI does not replay an arbitrary in-flight graph segment or completed tool/model
-operation.
-
-Startup reconciliation is explicit:
-
-- `pending` runs remain eligible for normal outbox dispatch;
-- `cancelling` runs commit `cancelled`;
-- process-owned `running` or `suspended` runs commit terminal `interrupted`; and
-- restart-time interrupted publication uses the latest stable checkpoint when present.
-
-The incomplete active segment is never invoked again. `interrupted` is terminal for the
-old execution. A later user continuation is a new logical run from the published head.
-
-Worker shutdown cancels active tasks, captures recoverable in-memory state, and commits
-`interrupted`. Explicit user cancel sets cancellation intent first and commits
-`cancelled`; shutdown and cancellation are not conflated. Even if the foreground waiter itself receives `CancelledError`, it waits
-through shielded durable settlement and projects the committed revision as canonical
-truth. The TUI emits `run_cancelled` only for a `cancelled` revision; `interrupted` and
-`failed` retain their error semantics. Every terminal revision restores the durable
-snapshot before phase and goal cleanup.
+Controlled failure and shutdown may publish the SDK's safe recoverable subset. The host
+preserves message history and resumable context as separate typed fields and excludes
+incomplete tool calls rather than replaying them.
 
 ## Process-Local Subagents
 
-YAACLI persists portable child descriptors, records, history, deferred state, usage,
-steering input, completion delivery, and owner scope in the product database. Execution
-itself uses processor-owned `LocalProcessorSubagentExecutionHost` with
-`LocalSubagentDriver` over SDK `InProcessSubagentDriver` and is process-local.
+`FileSubagentExecutionStore` implements the SDK `SubagentExecutionStore` protocol.
+`FileSubagentExecutionStore.restart_durable` and `LocalSubagentDriver.restart_durable`
+are both `False`: storage survives restart for inspection and delivery reconciliation,
+but model/tool execution is process-owned and is not resumed automatically.
 
 Consequences:
 
-- `SQLiteSubagentExecutionStore.restart_durable` and
-  `LocalSubagentDriver.restart_durable` are both `False`;
-- the interactive TUI's model-facing `delegate` schema fixes mode to background, while
-  the processor host owns detached task lifetime, wait, cancellation, and shutdown;
-- the one-shot headless frontend fixes `delegate` to foreground and waits for that same
-  processor-hosted task before shutdown; either frontend rejects a visible route that
-  does not allow its fixed mode during runtime construction;
-- startup marks `pending`, `running`, or `suspended` child orphans `lost` and rejects
-  unresolved input;
-- it does not recreate or replay child model/tool work;
-- SDK inline and YAACLI hosted execution share one portable service lifecycle, but
-  YAACLI does not use the SDK inline execution host;
-- public child handles use `<route>-<4hex>` in both frontends; mode is explicit record
-  data rather than an ID marker, `resume_subagent` receives the prior terminal
-  `execution_id` and returns a new linked handle, and wait, steer, and cancel target one
-  exact execution while bounded model-facing projections keep internal descriptors,
-  usage, deferred payloads, and logical-run/correlation IDs private;
+- frontend startup marks `pending`, `running`, or `suspended` children whose exact
+  process-generation lock is no longer held `lost` and rejects unresolved child input,
+  while leaving children owned by another live terminal untouched;
+- terminal child records remain inspectable after completion;
+- exact descriptors are embedded in each child file and restored lazily for linked
+  continuation or nested authorization;
+- unavailable historical capability code fails only the operation that needs it and
+  does not block current runtime startup;
 - spawn and steering idempotency are owner scoped;
-- suspended children keep their durable inbox open for the next continuation segment,
-  each input identity is enqueued at most once per native attempt, and terminal admission
-  races return a rejected receipt rather than a tool failure;
-- cancelling a suspended child commits terminal `cancelled` state and rejects unresolved
-  input, while repeated cancellation of any terminal child returns the same record;
-- child request usage is cumulative across native deferred continuation;
-- every active child descriptor is persisted before its delegation service is exposed,
-  and execution creation reasserts that descriptor in the same transaction so concurrent
-  descriptor GC cannot create a dangling reference;
-- an exact historical child descriptor remains in SQLite while an execution record references it, but it is not embedded into a new root runtime descriptor or eagerly reconstructed at startup;
-- resume and nested authorization load a historical descriptor lazily through the retained-plan provider, revalidate its exact identity, and fail that operation explicitly when compatible executable capability code is unavailable without blocking current runtime startup;
-- terminal completion enters the canonical parent input path idempotently; and
-- tombstoning an owner closes child inboxes, atomically records every nonterminal child
-  as cancelled, persists cancellation intent, and fences late model starts, saves,
-  steering, and success commits.
+- child steering is persisted before graph application;
+- suspended children retain their inbox for the continuation segment;
+- child usage is cumulative across deferred continuation;
+- terminal completion enters the parent SQLite `run_inputs` path idempotently; and
+- pending completion-delivery state remains in the child file for later inspection and
+  reconciliation.
 
-The TUI poller is a session-scoped readiness projection only. Switching sessions does
-not reparent work.
+The TUI's `/agents` view scans only the current session's child files. Switching sessions
+does not reparent work.
 
-## Restore, New, and Delete
+## Locking and Tombstone Fence
 
-Startup restore and `/session <id>` load the active session and its head revision from
-`SessionStore`, then restore canonical history, validated resumable context, bounded
-display replay, and metadata. Current runtime/environment authority remains in force;
-persisted state cannot weaken current security or approval policy.
+Locks are scoped by `session_id`, not global. Different terminals/sessions use different
+lock files and remain concurrent. The lock covers only short local state transitions:
+owner-status validation, JSON replacement, and tombstone fencing. Model calls, tool
+calls, child execution, waits, and network operations never hold it.
 
-`/new` publishes a fresh session identity. It does not reuse the previous head or inbox.
+All children in one session briefly share the session lifecycle lock, but each child
+writes its own state file. This prevents a tombstone/write race without creating a
+shared-document lost-update problem. A separate global lock covers only the short child
+execution-ID creation claim; it never covers execution, steering, waits, or ordinary
+state writes.
 
-Deletion refuses a session with nonterminal main work. For an inactive main session it
-writes a tombstone that hides the session, atomically records every nonterminal child
-as cancelled, rejects pending child input, persists child cancellation intent, and
-rejects all later product writes. Physical purge waits until both main and child work
-are terminal.
+Tombstoning follows this order while holding the owner session lock:
 
-## Offline Export and Import
+1. verify no main logical run is nonterminal;
+2. commit the SQLite session tombstone;
+3. mark nonterminal children cancelled;
+4. reject unresolved child input; and
+5. persist child cancellation intent before releasing the lock.
 
-`/dump` exports a user-readable bundle. `/load` validates and imports one completed
-`offline_import` revision through `SessionStore.import_revision()`.
+Child writes acquire the same session lock and recheck the SQLite owner status. A write
+that starts after tombstone publication is rejected, and a pre-tombstone writer cannot
+escape after the fence. Different sessions are unaffected.
 
-Import advances the head transactionally and schedules no execution command. It is not
-a compatibility loader for removed runtime state.
+## Retention and Maintenance
 
-## Headless Contract
+Retention keeps the configured number of complete terminal run bundles per session and
+the configured number/age of quiescent sessions. It never deletes nonterminal main or
+child work.
 
-Headless stdout is NDJSON; diagnostics go to stderr. Terminal ordering follows product
-commit:
+Startup maintenance:
 
-- success commits before `RUN_FINISHED`;
-- failure commits before `RUN_ERROR`;
-- explicit cancellation commits `run_cancelled`;
-- restart/shutdown loss commits `run_interrupted`; and
-- persistence failure cannot emit false success.
+1. physically purges previously tombstoned, quiescent sessions;
+2. prunes complete old run bundles;
+3. tombstones only quiescent count/age candidates under their individual session locks;
+4. removes orphan revision/checkpoint files and directories for purged sessions;
+5. performs a passive WAL checkpoint; and
+6. runs rate-limited `VACUUM` only when configured thresholds permit it.
 
-## SQLite Operational Contract
-
-`SQLiteSessionStore` enables foreign keys, WAL mode, `synchronous=FULL`, and a bounded
-busy timeout. Writes use `BEGIN IMMEDIATE`.
-
-Terminal publication deletes its execution checkpoint in the same transaction because
-the full terminal revision supersedes that segment boundary. Retention deletes complete
-old run bundles rather than trimming individual payload columns: action decisions,
-events, checkpoints, inputs, revisions, execution rows, and the logical run are removed
-together while the session head and newest configured number of turns remain intact.
-
-Startup maintenance physically purges only previously tombstoned sessions whose main and
-child work is now terminal, then selects only quiescent active sessions for count- or
-age-based tombstoning. It performs a mark-and-sweep of subagent plan descriptors from all
-surviving execution records and a passive WAL checkpoint. `VACUUM` runs only when
-reclaimable pages exceed a bounded size threshold and the persisted minimum interval has
-elapsed; it is never part of a product write transaction. Automatic vacuum uses a short
-lock timeout, records attempts for retry throttling, and defers busy-database failures
+`VACUUM` is never part of a product write transaction. Busy-database failures defer it
 rather than blocking or failing startup.
 
-Only an empty database may bootstrap the current unified schema. Every nonempty database
-must match the exact marker and normalized table/index definitions. Validation runs
-before write-affecting operational pragmas, so an incompatible database is rejected
-without changing its content or journal mode. Missing constraints, indexes, or marker
-are rejected without runtime stamping or repair. The subagent adapter validates the
-exact child-table subset in the same database.
+## Schema Cutover
 
-The default YAACLI 2 product store is `<session_dir>/sessions-v2.sqlite3`. YAACLI does
-not inspect, migrate, or modify the former default `sessions.sqlite3`. Explicit
-`[session] database_path` and `YAACLI_DATABASE_PATH` values remain authoritative and
-use the same strict schema validation; YAACLI never silently redirects an incompatible
-explicit path.
+The internal SQLite schema marker is version 6. The default path is still
+`<session_dir>/sessions-v2.sqlite3`.
 
-`[session] session_dir` and `database_path` select the product store. There is no second
-execution database setting.
+Schema-v5 YAACLI 2 data is intentionally disposable for this cutover. When the known v5
+marker is found, YAACLI explicitly deletes and recreates the same database path; no
+payload migration, dual read, or v3 database is created. The complete normalized schema-v5 object set is fingerprinted before destructive
+cutover under a sibling filesystem lock. Other incompatible, malformed, or unmarked
+databases are rejected rather than silently interpreted.
+
+The former pre-2.0 default `sessions.sqlite3` remains untouched and is not migrated.
 
 ## Verification Invariants
 
 Tests cover:
 
-- reopen-safe sessions, descriptors, checkpoints, and exact schema validation;
-- atomic run/input/outbox creation and delayed retry;
-- exact descriptor dispatch and explicit failure when historical code is unavailable;
-- main TestModel turn, stable checkpoint, terminal revision, and event publication;
-- cumulative request budgets across deferred segments;
-- HITL suspension without holding the shared plan lock;
-- startup `interrupted` publication from the latest checkpoint without model replay;
-- accepted input, action, terminal, and tombstone state transitions;
-- process-local child deferred continuation, usage, persisted steering, owner fencing,
-  exact descriptor retention, lazy historical-plan restoration, incompatible-history
-  startup isolation, and startup orphan-to-`lost` recovery;
-- offline import without execution dispatch; and
-- TUI/headless restoration from identical revision semantics.
+- schema-v5 destructive cutover at the same path and strict rejection of unknown schema;
+- absence of subagent tables and large revision/checkpoint columns in SQLite;
+- grep-readable revision, checkpoint, and child files;
+- file-first publication and orphan cleanup;
+- metadata-only session summaries;
+- checkpoint and terminal publication idempotency;
+- input, HITL, terminal, and tombstone state transitions;
+- interrupted recovery without model replay;
+- process-local child deferred continuation, cumulative usage, persisted steering,
+  owner fencing, exact descriptor restoration, terminal inspection, and startup
+  orphan-to-lost recovery;
+- independent session-lock concurrency and same-session multi-child writes;
+- retention refusal for nonterminal main or child work; and
+- identical revision semantics in TUI and headless frontends.

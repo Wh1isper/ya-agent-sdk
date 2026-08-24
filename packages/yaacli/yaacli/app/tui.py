@@ -170,7 +170,7 @@ from yaacli.durable.projections import (
 )
 from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.durable.subagents import SQLiteSubagentExecutionStore
+from yaacli.durable.subagents import FileSubagentExecutionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str as _safe_exception_str
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason, GoalIterationEvent
@@ -739,7 +739,7 @@ class TUIApp:
 
     # Durable background readiness projection
     _shell_notification_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
-    _subagent_execution_store: SQLiteSubagentExecutionStore | None = field(default=None, init=False, repr=False)
+    _subagent_execution_store: FileSubagentExecutionStore | None = field(default=None, init=False, repr=False)
     _subagent_execution_service: SubagentExecutionService | None = field(default=None, init=False, repr=False)
     _projected_subagent_completion_ids: set[str] = field(default_factory=set, init=False, repr=False)
     _session_clear_in_progress: bool = field(default=False, init=False)
@@ -1111,7 +1111,13 @@ class TUIApp:
             self._execution_worker.runtime,
         )
         self._skill_toolset = self._skill_toolsets[active_runtime_id]
-        self._subagent_execution_store = SQLiteSubagentExecutionStore(database_path)
+        self._subagent_execution_store = FileSubagentExecutionStore(database_path)
+        recovered_child_ids = self._subagent_execution_store.recover_orphaned_executions()
+        if recovered_child_ids:
+            logger.info(
+                "Marked %d interrupted subagent executions lost",
+                len(recovered_child_ids),
+            )
         for capability in self._runtime.capabilities:
             if isinstance(capability, DelegationCapability):
                 self._subagent_execution_service = capability.service
@@ -5723,7 +5729,7 @@ class TUIApp:
         """Show durable subagent executions linked to the current session."""
         if self._durable_store is None:
             raise RuntimeError("Durable store is not initialized")
-        store = SQLiteSubagentExecutionStore(self.config_manager.get_session_database_path())
+        store = FileSubagentExecutionStore(self.config_manager.get_session_database_path())
         try:
             records = list(await store.list(owner_scope_id=self._session_id))
         finally:

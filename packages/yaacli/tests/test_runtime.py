@@ -52,7 +52,7 @@ from yaacli.config import (
 )
 from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.durable.subagents import LocalProcessorSubagentExecutionHost, SQLiteSubagentExecutionStore
+from yaacli.durable.subagents import FileSubagentExecutionStore, LocalProcessorSubagentExecutionHost
 from yaacli.model_profiles import save_selected_model_profile_id
 from yaacli.runtime import (
     GoalContextHandoffExtension,
@@ -455,8 +455,23 @@ async def test_delegation_builder_isolates_unavailable_retained_descriptor_until
     )
     database_path = tmp_path / "descriptors.sqlite3"
     product_store = SQLiteSessionStore(database_path)
-    retained_store = SQLiteSubagentExecutionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    retained_store = FileSubagentExecutionStore(database_path)
     retained_store.put_descriptor(retained)
+    record = SubagentExecutionRecord(
+        root_execution_id="legacy-execution",
+        execution_id="legacy-execution",
+        owner_scope_id="session",
+        idempotency_key="legacy-execution",
+        descriptor_id=retained.descriptor_id,
+        plan_fingerprint=retained.fingerprint,
+        route=retained.spec.route,
+        mode=SubagentExecutionMode.foreground,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="resume legacy work",
+    )
+    await retained_store.create(record)
     retained_store.close_sync()
 
     original_restore = SubagentPlanResolver.restore
@@ -480,7 +495,7 @@ async def test_delegation_builder_isolates_unavailable_retained_descriptor_until
     )
     assert capability is not None
     store = capability.service.store
-    assert isinstance(store, SQLiteSubagentExecutionStore)
+    assert isinstance(store, FileSubagentExecutionStore)
     assert isinstance(capability.service.execution_host, LocalProcessorSubagentExecutionHost)
     assert capability.allow_mode_override is False
     try:
@@ -491,19 +506,6 @@ async def test_delegation_builder_isolates_unavailable_retained_descriptor_until
 
         provider = capability.service.retained_plan_provider
         assert provider is not None
-        record = SubagentExecutionRecord(
-            root_execution_id="legacy-execution",
-            execution_id="legacy-execution",
-            owner_scope_id="session",
-            idempotency_key="legacy-execution",
-            descriptor_id=retained.descriptor_id,
-            plan_fingerprint=retained.fingerprint,
-            route=retained.spec.route,
-            mode=SubagentExecutionMode.foreground,
-            parent_agent_id="main",
-            parent_logical_run_id="parent-run",
-            prompt="resume legacy work",
-        )
         with pytest.raises(ValueError, match="historical capability unavailable"):
             await provider.load_retained_plan(record)
 

@@ -8,7 +8,7 @@
 | [02-configuration.md](./02-configuration.md) | Configuration via environment variables           |
 | [03-tui-environment.md](./03-tui-environment.md) | TUI Environment, system-temp policy, and shell-monitor resource |
 | [04-steering.md](./04-steering.md)           | Durable input admission and native Pydantic AI steering |
-| [05-session-persistence.md](./05-session-persistence.md) | SQLite SessionStore, local execution coordination, revisions, and recovery |
+| [05-session-persistence.md](./05-session-persistence.md) | Hybrid SQLite/file SessionStore, local execution coordination, revisions, and recovery |
 | [06-ui-layout.md](./06-ui-layout.md)         | TUI layout and user experience design             |
 | [07-logging.md](./07-logging.md)             | Logging configuration                             |
 | [08-hitl.md](./08-hitl.md)                   | Human-in-the-loop approval workflow               |
@@ -29,8 +29,9 @@ flowchart TB
 
     subgraph Product[Session application]
         Service[Session application service]
-        Store[SQLite SessionStore]
-        Inbox[Input, action, and completion inbox/outbox]
+        Store[SQLite metadata store]
+        StateFiles[Revision, checkpoint, and child state files]
+        Inbox[Input, action, and completion inbox]
     end
 
     subgraph Execution[Host-owned execution]
@@ -50,6 +51,7 @@ flowchart TB
     TUI --> Service
     Headless --> Service
     Service --> Store
+    Store --> StateFiles
     Service --> Inbox
     Inbox --> Coordinator
     Coordinator --> Harness
@@ -83,9 +85,10 @@ Configuration primarily uses `~/.yaacli/config.toml`, project `.yaacli/` files, 
 `YAACLI_*` environment overrides. Declarative main and child definitions embed native
 Pydantic AI `AgentSpec` cores; YA config adds only TUI/session/durability and subagent
 policy envelopes. User config directories also store MCP configuration, skills, and
-runtime settings. `SessionStore` owns session revisions, canonical history,
-`RunInputLedger`, actions, stable segment checkpoints, usage, event replay, and execution
-linkage. There is no second execution-engine store.
+runtime settings. The hybrid `SessionStore` keeps transactional metadata, input, actions,
+and events in SQLite while deterministic JSON files hold canonical revision history,
+`ResumableState`, stable checkpoints, usage, display replay, and self-contained child
+records. There is no second execution-engine database or artifact catalog.
 
 ### 3. Capability-First Composition
 

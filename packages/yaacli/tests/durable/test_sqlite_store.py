@@ -18,6 +18,8 @@ from yaacli.durable import (
     TombstonedSessionError,
 )
 from yaacli.durable import sqlite as sqlite_store_module
+from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.models import ExecutionCheckpointRecord
 
 
 def test_store_bootstraps_only_a_truly_empty_database(tmp_path: Path) -> None:
@@ -511,3 +513,256 @@ def test_offline_import_publishes_revision_with_model_metadata(tmp_path: Path) -
         assert run.status is LogicalRunStatus.completed
         assert run.model == "test:model"
         assert run.model_profile_id == "test-profile"
+
+
+def test_schema_v5_store_is_destructively_recreated_at_same_path(tmp_path: Path) -> None:
+    database_path = tmp_path / "sessions-v2.sqlite3"
+    legacy_schema = (Path(__file__).parents[1] / "fixtures" / "session_schema_v5.sql").read_text(encoding="utf-8")
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(legacy_schema)
+        connection.execute(
+            """
+            INSERT INTO sessions(
+                session_id, workspace_ref, status, created_at, updated_at
+            ) VALUES('discard-me', '/workspace', 'active', ?, ?)
+            """,
+            (datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
+        )
+
+    with SQLiteSessionStore(database_path) as store:
+        marker = store._connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+        assert marker is not None and marker[0] == str(sqlite_store_module._SCHEMA_VERSION)
+        assert store.list_sessions() == ()
+        created = store.create_session("/workspace", session_id="new-session")
+
+    assert database_path.exists()
+    with SQLiteSessionStore(database_path) as reopened:
+        assert reopened.get_session(created.session_id) == created
+
+
+def test_sqlite_schema_contains_only_revision_and_checkpoint_metadata(tmp_path: Path) -> None:
+    database_path = tmp_path / "metadata-only.sqlite3"
+    with SQLiteSessionStore(database_path):
+        pass
+
+    with sqlite3.connect(database_path) as connection:
+        revision_columns = {row[1] for row in connection.execute("PRAGMA table_info(revisions)")}
+        checkpoint_columns = {row[1] for row in connection.execute("PRAGMA table_info(execution_checkpoints)")}
+        table_names = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
+
+    assert {
+        "message_history_json",
+        "resumable_state_json",
+        "input_ledger_json",
+        "display_projection_json",
+        "usage_json",
+        "terminal_json",
+    }.isdisjoint(revision_columns)
+    assert {"payload_json", "deferred_requests_json"}.isdisjoint(checkpoint_columns)
+    assert not any(name.startswith("subagent_") for name in table_names)
+
+
+def test_revision_and_checkpoint_payloads_are_pretty_grepable_files(tmp_path: Path) -> None:
+    database_path = tmp_path / "grepable.sqlite3"
+    payload = RevisionPayload(
+        message_history=[{"kind": "request", "content": "你好 durable history"}],
+        resumable_state={"notes": {"scope": "grep-me"}},
+        display_projection=[{"type": "RUN_STARTED"}],
+        terminal={"status": "completed", "output": "完成"},
+    )
+    now = datetime.now(UTC)
+    with SQLiteSessionStore(database_path) as store:
+        session = store.create_session("/workspace", session_id="grep-session")
+        run = store.start_run(_request(session.session_id))
+        store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+        checkpoint = ExecutionCheckpointRecord(
+            execution_id=run.execution_id,
+            logical_run_id=run.logical_run_id,
+            segment_index=0,
+            segment_status="completed",
+            payload=payload,
+            created_at=now,
+            updated_at=now,
+        )
+        store.put_execution_checkpoint(checkpoint)
+        checkpoint_path = store.state_files.checkpoint_path(
+            session.session_id,
+            run.execution_id,
+        )
+        checkpoint_text = checkpoint_path.read_text(encoding="utf-8")
+        assert "你好 durable history" in checkpoint_text
+        assert '\n  "checkpoint"' in checkpoint_text
+        assert store.get_execution_checkpoint(run.execution_id) == checkpoint
+
+        revision, _event = store.commit_terminal(
+            run.logical_run_id,
+            commit_kind="success",
+            payload=payload,
+            terminal_status=LogicalRunStatus.completed,
+            event_type="RUN_FINISHED",
+        )
+        revision_path = store.state_files.revision_path(
+            session.session_id,
+            revision.revision_id,
+        )
+        revision_text = revision_path.read_text(encoding="utf-8")
+        assert "你好 durable history" in revision_text
+        assert "grep-me" in revision_text
+        assert "完成" in revision_text
+        assert checkpoint_path.exists() is False
+        assert store.get_revision(revision.revision_id) == revision
+
+
+def test_failed_revision_metadata_publish_leaves_only_cleanup_orphan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "file-first.sqlite3"
+    with SQLiteSessionStore(database_path) as store:
+        session = store.create_session("/workspace", session_id="file-first")
+        run = store.start_run(_request(session.session_id))
+        store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+
+        def fail_metadata_publish(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("injected metadata failure")
+
+        monkeypatch.setattr(store, "_insert_revision_metadata", fail_metadata_publish)
+        with pytest.raises(RuntimeError, match="injected metadata failure"):
+            store.commit_terminal(
+                run.logical_run_id,
+                commit_kind="success",
+                payload=RevisionPayload(message_history=[{"orphan": "searchable"}]),
+                terminal_status=LogicalRunStatus.completed,
+                event_type="RUN_FINISHED",
+            )
+
+        orphan_paths = tuple((tmp_path / session.session_id / "revisions").glob("*/state.json"))
+        assert len(orphan_paths) == 1
+        assert store.get_revision_for_run(run.logical_run_id) is None
+        result = store.run_maintenance()
+        assert result.removed_orphan_files == 1
+        assert orphan_paths[0].exists() is False
+
+
+def test_malformed_schema_v5_store_is_rejected_without_reset(tmp_path: Path) -> None:
+    database_path = tmp_path / "malformed-v5.sqlite3"
+    legacy_schema = (Path(__file__).parents[1] / "fixtures" / "session_schema_v5.sql").read_text(encoding="utf-8")
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(legacy_schema)
+        connection.execute("DROP INDEX sessions_updated_idx")
+
+    with pytest.raises(RuntimeError, match="exact durable product schema"):
+        SQLiteSessionStore(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        marker = connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+        assert marker == ("5",)
+        assert connection.execute("SELECT 1 FROM sqlite_schema WHERE name = 'sessions_updated_idx'").fetchone() is None
+
+
+def test_orphan_cleanup_never_claims_unmarked_sibling_directories(tmp_path: Path) -> None:
+    unrelated = tmp_path / "unrelated" / "checkpoints"
+    unrelated.mkdir(parents=True)
+    important = unrelated / "important.txt"
+    important.write_text("must survive", encoding="utf-8")
+    empty_unrelated = tmp_path / "empty-unrelated"
+    empty_unrelated.mkdir()
+
+    with SQLiteSessionStore(tmp_path / "sessions.sqlite3") as store:
+        with pytest.raises(RuntimeError, match="Refusing to claim unmarked"):
+            store.tombstone_session("empty-unrelated")
+        store.run_maintenance()
+
+    assert important.read_text(encoding="utf-8") == "must survive"
+    assert empty_unrelated.is_dir()
+    assert tuple(empty_unrelated.iterdir()) == ()
+
+
+def test_failed_checkpoint_metadata_update_reads_previous_committed_segment(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "checkpoint-failure.sqlite3"
+    now = datetime.now(UTC)
+    with SQLiteSessionStore(database_path) as store:
+        session = store.create_session("/workspace", session_id="checkpoint-session")
+        run = store.start_run(_request(session.session_id))
+        store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+        first = ExecutionCheckpointRecord(
+            execution_id=run.execution_id,
+            logical_run_id=run.logical_run_id,
+            segment_index=0,
+            segment_status="completed",
+            payload=RevisionPayload(message_history=[{"segment": 0}]),
+            created_at=now,
+            updated_at=now,
+        )
+        assert store.put_execution_checkpoint(first) == first
+        second = ExecutionCheckpointRecord(
+            execution_id=run.execution_id,
+            logical_run_id=run.logical_run_id,
+            segment_index=1,
+            segment_status="suspended",
+            payload=RevisionPayload(message_history=[{"segment": 1}]),
+            deferred_requests={"approvals": []},
+            created_at=now + timedelta(seconds=1),
+            updated_at=now + timedelta(seconds=1),
+        )
+        store._connection.execute(
+            """
+            CREATE TRIGGER fail_checkpoint_update
+            BEFORE UPDATE ON execution_checkpoints
+            BEGIN
+                SELECT RAISE(ABORT, 'injected checkpoint metadata failure');
+            END
+            """
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="injected checkpoint metadata failure"):
+            store.put_execution_checkpoint(second)
+
+        assert store.get_execution_checkpoint(run.execution_id) == first
+        staged = store.state_files.read_checkpoint(session.session_id, run.execution_id)
+        assert staged.checkpoint.segment_index == 1
+        assert staged.previous_checkpoint == first
+
+        store._connection.execute("DROP TRIGGER fail_checkpoint_update")
+        committed = store.put_execution_checkpoint(second)
+        assert committed.segment_index == 1
+        assert committed.created_at == first.created_at
+        compacted = store.state_files.read_checkpoint(session.session_id, run.execution_id)
+        assert compacted.checkpoint == committed
+        assert compacted.previous_checkpoint is None
+
+
+def test_session_summary_reads_sqlite_metadata_without_loading_revision_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "metadata-summary.sqlite3"
+    with SQLiteSessionStore(database_path) as store:
+        session = store.create_session("/workspace", session_id="summary-session")
+        run = store.start_run(_request(session.session_id))
+        store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+        revision, _event = store.commit_terminal(
+            run.logical_run_id,
+            commit_kind="success",
+            payload=RevisionPayload(
+                message_history=[{"kind": "request"}, {"kind": "response"}],
+                display_projection=[{"type": "RUN_FINISHED"}],
+                terminal={"status": "completed", "output": "metadata answer"},
+            ),
+            terminal_status=LogicalRunStatus.completed,
+            event_type="RUN_FINISHED",
+        )
+
+        def reject_revision_read(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("session summary loaded the revision state file")
+
+        monkeypatch.setattr(store.state_files, "read_revision", reject_revision_read)
+        summary = SessionApplicationService(store).get_session_summary(session.session_id)
+
+        assert summary.head_revision_id == revision.revision_id
+        assert summary.input_preview == "hello"
+        assert summary.output_preview == "metadata answer"
+        assert summary.message_count == 2
+        assert summary.display_event_count == 1

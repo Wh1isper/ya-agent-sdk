@@ -6,48 +6,7 @@ import sqlite3
 from functools import lru_cache
 
 SchemaObjectKey = tuple[str, str]
-
-SUBAGENT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS subagent_plan_descriptors (
-    descriptor_id TEXT PRIMARY KEY,
-    fingerprint TEXT NOT NULL,
-    descriptor_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS subagent_executions (
-    execution_id TEXT PRIMARY KEY,
-    owner_scope_id TEXT NOT NULL REFERENCES sessions(session_id),
-    idempotency_key TEXT NOT NULL,
-    record_json TEXT NOT NULL,
-    input_open INTEGER NOT NULL CHECK(input_open IN (0, 1)),
-    cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK(cancel_requested IN (0, 1)),
-    cancellation_reason TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(owner_scope_id, idempotency_key),
-    CHECK(cancel_requested = 0 OR input_open = 0)
-);
-CREATE INDEX IF NOT EXISTS subagent_executions_scope_idx
-    ON subagent_executions(owner_scope_id, created_at, execution_id);
-CREATE TABLE IF NOT EXISTS subagent_inputs (
-    input_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL REFERENCES subagent_executions(execution_id) ON DELETE CASCADE,
-    order_index INTEGER NOT NULL,
-    idempotency_key TEXT NOT NULL,
-    origin TEXT NOT NULL CHECK(origin IN ('user', 'feature')),
-    priority TEXT NOT NULL CHECK(priority IN ('asap', 'when_idle')),
-    content_json TEXT NOT NULL,
-    state TEXT NOT NULL CHECK(state IN ('accepted', 'enqueued', 'applied', 'rejected')),
-    native_enqueue_id TEXT,
-    rejection_reason TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(execution_id, idempotency_key),
-    UNIQUE(execution_id, order_index)
-);
-CREATE INDEX IF NOT EXISTS subagent_inputs_execution_idx
-    ON subagent_inputs(execution_id, state, order_index);
-"""
+SESSION_SCHEMA_VERSION = 6
 
 
 def user_schema_object_names(connection: sqlite3.Connection) -> frozenset[str]:

@@ -60,7 +60,7 @@ session_dir = "{session_dir}"
     startup_logs: list[str] = []
     monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
     monkeypatch.setattr(
-        "yaacli.app.tui.SQLiteSubagentExecutionStore.list_referenced_descriptors",
+        "yaacli.app.tui.FileSubagentExecutionStore.list_referenced_descriptors",
         reject_historical_descriptor_scan,
     )
     monkeypatch.setattr(

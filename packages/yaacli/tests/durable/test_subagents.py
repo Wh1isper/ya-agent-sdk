@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -9,7 +11,6 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-import yaacli.durable.sqlite as durable_sqlite
 from pydantic import TypeAdapter
 from pydantic_ai import Agent, AgentSpec, DeferredToolRequests, DeferredToolResults, Tool, ToolDenied
 from pydantic_ai.capabilities import AbstractCapability
@@ -24,6 +25,7 @@ from ya_agent_sdk.subagents import (
     ResolvedSubagentPlan,
     SubagentDeliveryState,
     SubagentDurability,
+    SubagentExecutionIdConflict,
     SubagentExecutionMode,
     SubagentExecutionRecord,
     SubagentExecutionService,
@@ -38,14 +40,14 @@ from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.store import TombstonedSessionError
 from yaacli.durable.subagents import (
     DurableSubagentInboxCapability,
+    FileSubagentExecutionStore,
     LocalProcessorSubagentExecutionHost,
     LocalSubagentDriver,
-    SQLiteSubagentExecutionStore,
 )
 from yaacli.session import TUIContext
 
 
-def _put_worker_descriptor(store: SQLiteSubagentExecutionStore) -> ResolvedSubagentPlan:
+def _put_worker_descriptor(store: FileSubagentExecutionStore) -> ResolvedSubagentPlan:
     plan = SubagentPlanResolver(
         build_default_capability_catalog(),
         default_model="test",
@@ -78,66 +80,178 @@ class ApprovalCapability(SupportsDeferredOutput, AbstractCapability[TUIContext])
         )
 
 
-def test_subagent_store_rejects_partial_schema_before_running_ddl(tmp_path: Path) -> None:
-    database_path = tmp_path / "partial-child.sqlite3"
+def test_file_subagent_store_requires_initialized_product_store(tmp_path: Path) -> None:
+    database_path = tmp_path / "missing.sqlite3"
+
+    with pytest.raises(RuntimeError, match="Initialize SQLiteSessionStore"):
+        FileSubagentExecutionStore(database_path)
+
+
+def test_product_database_contains_no_subagent_tables(tmp_path: Path) -> None:
+    database_path = tmp_path / "product.sqlite3"
+    with SQLiteSessionStore(database_path):
+        pass
+
+    with sqlite3.connect(database_path) as connection:
+        names = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
+    assert not any(name.startswith("subagent_") for name in names)
+
+
+async def test_session_locks_do_not_block_subagents_in_other_sessions(tmp_path: Path) -> None:
+    database_path = tmp_path / "independent-session-locks.sqlite3"
     product_store = SQLiteSessionStore(database_path)
-    product_store.close()
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("DROP INDEX subagent_executions_scope_idx")
-
-    with pytest.raises(RuntimeError, match="missing index:subagent_executions_scope_idx"):
-        SQLiteSubagentExecutionStore(database_path)
-
-    with sqlite3.connect(database_path) as connection:
-        index = connection.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = 'subagent_executions_scope_idx'"
-        ).fetchone()
-    assert index is None
-
-
-def test_subagent_store_rejects_same_columns_without_constraints(tmp_path: Path) -> None:
-    database_path = tmp_path / "malformed-child.sqlite3"
-    malformed_schema = durable_sqlite._SCHEMA.replace(
-        "input_open INTEGER NOT NULL CHECK(input_open IN (0, 1))",
-        "input_open INTEGER NOT NULL",
-        1,
+    product_store.create_session(str(tmp_path), session_id="session-a")
+    product_store.create_session(str(tmp_path), session_id="session-b")
+    store = FileSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
+    record = SubagentExecutionRecord(
+        root_execution_id="child-b",
+        execution_id="child-b",
+        owner_scope_id="session-b",
+        idempotency_key="child-b",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.running,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
     )
-    assert malformed_schema != durable_sqlite._SCHEMA
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(malformed_schema)
-        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
-    original_bytes = database_path.read_bytes()
+    await store.create(record)
+    completed = threading.Event()
+    errors: list[BaseException] = []
 
-    with pytest.raises(RuntimeError, match="definition mismatch for table:subagent_executions"):
-        SQLiteSubagentExecutionStore(database_path)
-
-    assert database_path.read_bytes() == original_bytes
-    assert not database_path.with_name(f"{database_path.name}-wal").exists()
-    assert not database_path.with_name(f"{database_path.name}-shm").exists()
-    with sqlite3.connect(database_path) as connection:
-        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
-
-
-def test_subagent_store_rejects_pre_v2_unscoped_schema(tmp_path: Path) -> None:
-    database_path = tmp_path / "legacy.sqlite3"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE subagent_executions (
-                execution_id TEXT PRIMARY KEY,
-                idempotency_key TEXT NOT NULL UNIQUE,
-                record_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+    def accept_other_session_input() -> None:
+        try:
+            store.accept_input(
+                record.execution_id,
+                ["independent"],
+                idempotency_key="independent",
+                origin=InputOrigin.user,
             )
-            """
-        )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            completed.set()
 
-    with pytest.raises(
-        RuntimeError,
-        match="exact owner-scoped execution and durable child-inbox schema",
-    ):
-        SQLiteSubagentExecutionStore(database_path)
+    with store.state_files.session_lock("session-a"):
+        thread = threading.Thread(target=accept_other_session_input)
+        thread.start()
+        assert completed.wait(timeout=2)
+    thread.join(timeout=2)
+
+    assert errors == []
+    assert store.list_inputs(record.execution_id)[0].content == ["independent"]
+    await store.close()
+    product_store.close()
+
+
+async def test_same_session_children_keep_independent_state_under_concurrent_writes(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "same-session-children.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    store = FileSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
+    records = tuple(
+        SubagentExecutionRecord(
+            root_execution_id=f"child-{index}",
+            execution_id=f"child-{index}",
+            owner_scope_id="session",
+            idempotency_key=f"child-{index}",
+            descriptor_id=plan.descriptor_id,
+            plan_fingerprint=plan.fingerprint,
+            route="worker",
+            mode=SubagentExecutionMode.background,
+            state=SubagentExecutionState.running,
+            parent_agent_id="main",
+            parent_logical_run_id="parent-run",
+            prompt="work",
+        )
+        for index in range(2)
+    )
+    for record in records:
+        await store.create(record)
+    errors: list[BaseException] = []
+
+    def write_inputs(record: SubagentExecutionRecord) -> None:
+        try:
+            for index in range(20):
+                store.accept_input(
+                    record.execution_id,
+                    [f"{record.execution_id}:{index}"],
+                    idempotency_key=f"input-{index}",
+                    origin=InputOrigin.user,
+                )
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write_inputs, args=(record,)) for record in records]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert errors == []
+    assert all(not thread.is_alive() for thread in threads)
+    assert [len(store.list_inputs(record.execution_id)) for record in records] == [20, 20]
+    assert all(store.state_files.subagent_path("session", record.execution_id).exists() for record in records)
+    await store.close()
+    product_store.close()
+
+
+async def test_concurrent_cross_session_create_claims_execution_id_once(tmp_path: Path) -> None:
+    database_path = tmp_path / "global-execution-id.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session-a")
+    product_store.create_session(str(tmp_path), session_id="session-b")
+    stores = (FileSubagentExecutionStore(database_path), FileSubagentExecutionStore(database_path))
+    plans = tuple(_put_worker_descriptor(store) for store in stores)
+    records = tuple(
+        SubagentExecutionRecord(
+            root_execution_id="shared-execution",
+            execution_id="shared-execution",
+            owner_scope_id=f"session-{'ab'[index]}",
+            idempotency_key=f"child-{index}",
+            descriptor_id=plans[index].descriptor_id,
+            plan_fingerprint=plans[index].fingerprint,
+            route="worker",
+            mode=SubagentExecutionMode.background,
+            state=SubagentExecutionState.running,
+            parent_agent_id="main",
+            parent_logical_run_id="parent-run",
+            prompt="work",
+        )
+        for index in range(2)
+    )
+    successes: list[SubagentExecutionRecord] = []
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def create(store: FileSubagentExecutionStore, record: SubagentExecutionRecord) -> None:
+        barrier.wait()
+        try:
+            successes.append(asyncio.run(store.create(record)))
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=create, args=(store, record)) for store, record in zip(stores, records, strict=True)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert len(successes) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], SubagentExecutionIdConflict)
+    assert all(not thread.is_alive() for thread in threads)
+    for store in stores:
+        await store.close()
+    product_store.close()
 
 
 async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_usage(
@@ -146,7 +260,7 @@ async def test_local_subagent_driver_persists_deferred_segments_and_cumulative_u
     database_path = tmp_path / "subagents.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     catalog = build_default_capability_catalog()
     plan = SubagentPlanResolver(
         catalog,
@@ -278,7 +392,7 @@ async def test_local_subagent_steering_is_persisted_before_graph_application(
     database_path = tmp_path / "steering.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -348,7 +462,7 @@ async def test_local_subagent_steering_returns_rejected_when_input_closes_during
     database_path = tmp_path / "steering-race.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -394,7 +508,7 @@ async def test_session_tombstone_atomically_fences_and_requests_child_cancellati
     database_path = tmp_path / "tombstone-subagents.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     session = product_store.create_session(str(tmp_path), session_id="session")
-    child_store = SQLiteSubagentExecutionStore(database_path)
+    child_store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(child_store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -420,12 +534,13 @@ async def test_session_tombstone_atomically_fences_and_requests_child_cancellati
 
     product_store.tombstone_session(session.session_id)
 
-    with sqlite3.connect(database_path) as connection:
-        execution_row = connection.execute(
-            "SELECT input_open, cancel_requested, cancellation_reason FROM subagent_executions WHERE execution_id = ?",
-            (record.execution_id,),
-        ).fetchone()
-    assert execution_row == (0, 1, "owner session tombstoned")
+    child_state = child_store.state_files.read_subagent(
+        session.session_id,
+        record.execution_id,
+    )
+    assert child_state.input_open is False
+    assert child_state.cancel_requested is True
+    assert child_state.cancellation_reason == "owner session tombstoned"
     assert child_store.list_inputs(record.execution_id)[0].state is InputState.rejected
     assert child_store.list_inputs(record.execution_id)[0].input_id == accepted.input_id
 
@@ -468,7 +583,7 @@ async def test_age_retention_skips_session_with_nonterminal_child(tmp_path: Path
     now = datetime(2026, 1, 31, tzinfo=UTC)
     product_store = SQLiteSessionStore(database_path, max_session_age_days=30)
     session = product_store.create_session(str(tmp_path), session_id="session")
-    child_store = SQLiteSubagentExecutionStore(database_path)
+    child_store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(child_store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -504,7 +619,7 @@ async def test_subagent_store_marks_process_orphans_lost_on_reopen(tmp_path: Pat
     database_path = tmp_path / "orphan.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-orphan",
@@ -527,9 +642,18 @@ async def test_subagent_store_marks_process_orphans_lost_on_reopen(tmp_path: Pat
         idempotency_key="pending-input",
         origin=InputOrigin.user,
     )
+    state = store.state_files.read_subagent("session", record.execution_id)
+    store.state_files.write_subagent(
+        state.model_copy(
+            update={
+                "owner_pid": 99_999_999,
+                "owner_token": "f" * 32,
+            }
+        )
+    )
     await store.close()
 
-    reopened = SQLiteSubagentExecutionStore(database_path)
+    reopened = FileSubagentExecutionStore(database_path)
     assert reopened.recover_orphaned_executions() == (record.execution_id,)
     recovered = await reopened.get(record.execution_id)
     inputs = reopened.list_inputs(record.execution_id)
@@ -550,7 +674,7 @@ async def test_opening_read_only_subagent_store_does_not_recover_live_execution(
     database_path = tmp_path / "live-reader.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    owner = SQLiteSubagentExecutionStore(database_path)
+    owner = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(owner)
     record = SubagentExecutionRecord(
         execution_id="child-live",
@@ -568,8 +692,9 @@ async def test_opening_read_only_subagent_store_does_not_recover_live_execution(
     )
     await owner.create(record)
 
-    reader = SQLiteSubagentExecutionStore(database_path)
+    reader = FileSubagentExecutionStore(database_path)
     try:
+        assert reader.recover_orphaned_executions() == ()
         persisted = await reader.get(record.execution_id)
         assert persisted is not None
         assert persisted.state is SubagentExecutionState.running
@@ -604,7 +729,7 @@ async def test_subagent_store_retains_exact_descriptors_for_terminal_records(
     database_path = tmp_path / "descriptors.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     store.put_descriptor(retained)
     store.put_descriptor(terminal_plan)
     terminal = SubagentExecutionRecord(
@@ -632,9 +757,8 @@ async def test_subagent_store_retains_exact_descriptors_for_terminal_records(
     assert store.get_descriptor(retained.descriptor_id) is not None
     await store.close()
 
-    maintenance = product_store.run_maintenance()
-    assert maintenance.pruned_descriptors == 1
-    reopened = SQLiteSubagentExecutionStore(database_path)
+    product_store.run_maintenance()
+    reopened = FileSubagentExecutionStore(database_path)
     try:
         assert reopened.get_descriptor(retained.descriptor_id) is None
         assert reopened.get_descriptor(terminal_plan.descriptor_id) == terminal_plan.to_descriptor()
@@ -643,18 +767,17 @@ async def test_subagent_store_retains_exact_descriptors_for_terminal_records(
         product_store.close()
 
 
-async def test_execution_create_restores_active_descriptor_swept_by_concurrent_maintenance(
+async def test_execution_create_keeps_active_descriptor_across_product_maintenance(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "descriptor-race.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
 
-    maintenance = product_store.run_maintenance()
-    assert maintenance.pruned_descriptors == 1
-    assert store.get_descriptor(plan.descriptor_id) is None
+    product_store.run_maintenance()
+    assert store.get_descriptor(plan.descriptor_id) == plan.to_descriptor()
 
     record = SubagentExecutionRecord(
         root_execution_id="execution",
@@ -676,7 +799,7 @@ async def test_execution_create_restores_active_descriptor_swept_by_concurrent_m
     product_store.close()
 
 
-async def test_subagent_store_fails_when_referenced_descriptor_is_missing(tmp_path: Path) -> None:
+async def test_subagent_state_file_is_self_contained_with_exact_descriptor(tmp_path: Path) -> None:
     resolver = SubagentPlanResolver(
         build_default_capability_catalog(),
         default_model="test",
@@ -692,31 +815,27 @@ async def test_subagent_store_fails_when_referenced_descriptor_is_missing(tmp_pa
     database_path = tmp_path / "missing-descriptor.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     store.put_descriptor(plan)
-    await store.create(
-        SubagentExecutionRecord(
-            root_execution_id="execution",
-            execution_id="execution",
-            owner_scope_id="session",
-            idempotency_key="execution",
-            descriptor_id=plan.descriptor_id,
-            plan_fingerprint=plan.fingerprint,
-            route="worker",
-            mode=SubagentExecutionMode.background,
-            parent_agent_id="main",
-            parent_logical_run_id="parent-run",
-            prompt="work",
-        )
+    record = SubagentExecutionRecord(
+        root_execution_id="execution",
+        execution_id="execution",
+        owner_scope_id="session",
+        idempotency_key="execution",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
     )
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "DELETE FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-            (plan.descriptor_id,),
-        )
+    await store.create(record)
 
-    with pytest.raises(RuntimeError, match="missing descriptor"):
-        store.list_referenced_descriptors()
+    state = store.state_files.read_subagent("session", record.execution_id)
+    assert state.descriptor == plan.to_descriptor()
+    assert state.record == record
+    assert store.list_referenced_descriptors() == (plan.to_descriptor(),)
     await store.close()
     product_store.close()
 
@@ -725,7 +844,7 @@ async def test_child_inbox_reuses_router_enqueue_on_new_native_attempt(tmp_path:
     database_path = tmp_path / "child-inbox-attempt.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -804,7 +923,7 @@ async def test_child_inbox_applies_idempotent_steering_at_graph_boundary(tmp_pat
     database_path = tmp_path / "child-inbox.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session")
-    store = SQLiteSubagentExecutionStore(database_path)
+    store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
         execution_id="child-running",
@@ -862,4 +981,51 @@ async def test_child_inbox_applies_idempotent_steering_at_graph_boundary(tmp_pat
     assert calls == 1
     assert "steer once" in str(seen_messages[0])
     await store.close()
+    product_store.close()
+
+
+async def test_tombstone_retry_finishes_child_fence_after_filesystem_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "tombstone-retry.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    session = product_store.create_session(str(tmp_path), session_id="session")
+    child_store = FileSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(child_store)
+    record = SubagentExecutionRecord(
+        execution_id="child-running",
+        root_execution_id="child-running",
+        owner_scope_id=session.session_id,
+        idempotency_key="child-running",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.running,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
+    )
+    await child_store.create(record)
+    original_fence = product_store.state_files.fence_subagents
+
+    def fail_fence(*_args: object, **_kwargs: object) -> tuple[str, ...]:
+        raise OSError("injected child fence failure")
+
+    monkeypatch.setattr(product_store.state_files, "fence_subagents", fail_fence)
+    with pytest.raises(OSError, match="injected child fence failure"):
+        product_store.tombstone_session(session.session_id)
+
+    assert product_store.get_session(session.session_id).status is SessionStatus.tombstoned  # type: ignore[union-attr]
+    assert (await child_store.get(record.execution_id)).state is SubagentExecutionState.running  # type: ignore[union-attr]
+
+    monkeypatch.setattr(product_store.state_files, "fence_subagents", original_fence)
+    product_store.tombstone_session(session.session_id)
+    persisted = await child_store.get(record.execution_id)
+    assert persisted is not None
+    assert persisted.state is SubagentExecutionState.cancelled
+    assert persisted.error == "owner session tombstoned"
+
+    await child_store.close()
     product_store.close()

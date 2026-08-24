@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -15,7 +16,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from pydantic import JsonValue
-from ya_agent_sdk.subagents.spec import SubagentExecutionRecord, SubagentExecutionState, SubagentInputState
 
 from yaacli.durable.models import (
     ActionBatch,
@@ -33,13 +33,20 @@ from yaacli.durable.models import (
     RevisionRecord,
     SessionRecord,
     SessionStatus,
+    SessionSummary,
     StartRunRequest,
     utc_now,
 )
 from yaacli.durable.sqlite_schema import (
-    SUBAGENT_SCHEMA,
+    SESSION_SCHEMA_VERSION,
     user_schema_object_names,
     validate_exact_schema_subset,
+)
+from yaacli.durable.state_files import (
+    CheckpointStateFile,
+    RevisionStateFile,
+    SessionStateFiles,
+    exclusive_file_lock,
 )
 from yaacli.durable.store import (
     InvalidTransitionError,
@@ -48,7 +55,9 @@ from yaacli.durable.store import (
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = SESSION_SCHEMA_VERSION
+_LEGACY_RESET_SCHEMA_VERSIONS = frozenset({"5"})
+_LEGACY_SCHEMA_V5_FINGERPRINT = "cdc841c9a9b51a4ddf01ab91f66e0f5df01562c53b30a87252edb67afb4ad951"
 _DEFAULT_MAX_TURNS_PER_SESSION = 20
 _DEFAULT_MAX_SESSIONS = 100
 _VACUUM_MIN_INTERVAL = timedelta(days=7)
@@ -147,10 +156,9 @@ CREATE TABLE IF NOT EXISTS executions (
 CREATE TABLE IF NOT EXISTS execution_checkpoints (
     execution_id TEXT PRIMARY KEY REFERENCES executions(execution_id),
     logical_run_id TEXT NOT NULL UNIQUE REFERENCES logical_runs(logical_run_id),
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
     segment_index INTEGER NOT NULL CHECK(segment_index >= 0),
     segment_status TEXT NOT NULL CHECK(segment_status IN ('completed', 'suspended')),
-    payload_json TEXT NOT NULL,
-    deferred_requests_json TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -180,12 +188,10 @@ CREATE TABLE IF NOT EXISTS revisions (
     logical_run_id TEXT NOT NULL REFERENCES logical_runs(logical_run_id),
     commit_kind TEXT NOT NULL,
     parent_revision_id TEXT,
-    message_history_json TEXT NOT NULL,
-    resumable_state_json TEXT NOT NULL,
-    input_ledger_json TEXT NOT NULL,
-    display_projection_json TEXT NOT NULL,
-    usage_json TEXT NOT NULL,
-    terminal_json TEXT NOT NULL,
+    message_count INTEGER NOT NULL CHECK(message_count >= 0),
+    display_event_count INTEGER NOT NULL CHECK(display_event_count >= 0),
+    input_preview TEXT,
+    output_preview TEXT,
     created_at TEXT NOT NULL,
     UNIQUE(logical_run_id, commit_kind)
 );
@@ -232,7 +238,6 @@ CREATE TABLE IF NOT EXISTS action_items (
 CREATE INDEX IF NOT EXISTS action_items_batch_idx
     ON action_items(batch_id, created_at, action_item_id);
 """
-_SCHEMA += SUBAGENT_SCHEMA
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +247,7 @@ class StoreMaintenanceResult:
     pruned_turns: int = 0
     purged_sessions: int = 0
     tombstoned_sessions: int = 0
-    pruned_descriptors: int = 0
+    removed_orphan_files: int = 0
     vacuumed: bool = False
 
 
@@ -266,24 +271,32 @@ class SQLiteSessionStore:
         path = Path(database_path).expanduser().resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
+        self.state_files = SessionStateFiles(path)
         self.max_turns_per_session = max_turns_per_session
         self.max_sessions = max_sessions
         self.max_session_age_days = max_session_age_days
         self._lock = threading.RLock()
-        self._connection = sqlite3.connect(
-            path,
-            isolation_level=None,
-            check_same_thread=False,
-            timeout=30.0,
-        )
-        self._connection.row_factory = sqlite3.Row
+        cutover_lock_path = path.with_name(f".{path.name}.cutover.lock")
+        with exclusive_file_lock(cutover_lock_path):
+            _reset_disposable_legacy_database(path)
+            self._connection = sqlite3.connect(
+                path,
+                isolation_level=None,
+                check_same_thread=False,
+                timeout=30.0,
+            )
+            self._connection.row_factory = sqlite3.Row
+            try:
+                with self._lock:
+                    self._initialize_or_validate_schema()
+                    self._connection.execute("PRAGMA foreign_keys = ON")
+                    self._connection.execute("PRAGMA journal_mode = WAL")
+                    self._connection.execute("PRAGMA synchronous = FULL")
+                    self._connection.execute("PRAGMA busy_timeout = 30000")
+            except BaseException:
+                self._connection.close()
+                raise
         try:
-            with self._lock:
-                self._initialize_or_validate_schema()
-                self._connection.execute("PRAGMA foreign_keys = ON")
-                self._connection.execute("PRAGMA journal_mode = WAL")
-                self._connection.execute("PRAGMA synchronous = FULL")
-                self._connection.execute("PRAGMA busy_timeout = 30000")
             maintenance = self.run_maintenance()
             if maintenance != StoreMaintenanceResult():
                 logger.info("SQLite maintenance completed: %s", maintenance)
@@ -349,14 +362,13 @@ class SQLiteSessionStore:
         now: datetime | None = None,
         force_vacuum: bool = False,
     ) -> StoreMaintenanceResult:
-        """Apply bounded retention, descriptor GC, WAL checkpointing, and optional vacuum."""
+        """Apply bounded retention, orphan cleanup, WAL checkpointing, and optional vacuum."""
         maintenance_time = now or utc_now()
+        purged_sessions = self._purge_tombstoned_sessions()
         with self._write() as connection:
-            purged_sessions = self._purge_tombstoned_sessions(connection)
             pruned_turns = self._prune_all_session_turns(connection)
-            tombstoned_sessions = self._tombstone_expired_sessions(connection, maintenance_time)
-            pruned_descriptors = self._prune_unreferenced_subagent_descriptors(connection)
-
+        tombstoned_sessions = self._tombstone_expired_sessions(maintenance_time)
+        removed_orphan_files = self._cleanup_orphan_state_files()
         with self._lock:
             self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
             vacuumed = self._maybe_vacuum(maintenance_time, force=force_vacuum)
@@ -364,9 +376,52 @@ class SQLiteSessionStore:
             pruned_turns=pruned_turns,
             purged_sessions=purged_sessions,
             tombstoned_sessions=tombstoned_sessions,
-            pruned_descriptors=pruned_descriptors,
+            removed_orphan_files=removed_orphan_files,
             vacuumed=vacuumed,
         )
+
+    def _cleanup_orphan_state_files(self) -> int:
+        removed = 0
+        for session_id in self.state_files.list_managed_session_ids():
+            if not self.state_files.session_dir(session_id).exists():
+                continue
+            try:
+                with self.state_files.session_lock(session_id):
+                    with self._lock:
+                        session_exists = (
+                            self._connection.execute(
+                                "SELECT 1 FROM sessions WHERE session_id = ?",
+                                (session_id,),
+                            ).fetchone()
+                            is not None
+                        )
+                        revision_ids = {
+                            str(row["revision_id"])
+                            for row in self._connection.execute(
+                                "SELECT revision_id FROM revisions WHERE session_id = ?",
+                                (session_id,),
+                            )
+                        }
+                        checkpoint_ids = {
+                            str(row["execution_id"])
+                            for row in self._connection.execute(
+                                "SELECT execution_id FROM execution_checkpoints WHERE session_id = ?",
+                                (session_id,),
+                            )
+                        }
+                    removed += self.state_files.remove_session_orphans(
+                        session_id,
+                        revision_ids=revision_ids,
+                        checkpoint_ids=checkpoint_ids,
+                        session_exists=session_exists,
+                    )
+            except OSError as exc:
+                logger.warning(
+                    "Deferred durable state-file cleanup for session %s: %s",
+                    session_id,
+                    exc,
+                )
+        return removed
 
     def _prune_all_session_turns(self, connection: sqlite3.Connection) -> int:
         session_rows = connection.execute(
@@ -413,41 +468,59 @@ class SQLiteSessionStore:
             connection.execute("DELETE FROM executions WHERE logical_run_id = ?", (logical_run_id,))
             connection.execute("DELETE FROM logical_runs WHERE logical_run_id = ?", (logical_run_id,))
 
-    def _purge_tombstoned_sessions(self, connection: sqlite3.Connection) -> int:
-        rows = connection.execute(
-            "SELECT session_id FROM sessions WHERE status = ? ORDER BY tombstoned_at, session_id",
-            (SessionStatus.tombstoned.value,),
-        ).fetchall()
-        purged = 0
-        for row in rows:
-            session_id = row["session_id"]
-            if not self._session_is_quiescent(connection, session_id):
-                continue
-            run_rows = connection.execute(
-                "SELECT logical_run_id FROM logical_runs WHERE session_id = ?",
-                (session_id,),
+    def _purge_tombstoned_sessions(self) -> int:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT session_id FROM sessions WHERE status = ? ORDER BY tombstoned_at, session_id",
+                (SessionStatus.tombstoned.value,),
             ).fetchall()
-            self._delete_run_bundles(connection, [run["logical_run_id"] for run in run_rows])
-            connection.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
-            connection.execute(
-                "DELETE FROM subagent_inputs WHERE execution_id IN "
-                "(SELECT execution_id FROM subagent_executions WHERE owner_scope_id = ?)",
-                (session_id,),
-            )
-            connection.execute("DELETE FROM subagent_executions WHERE owner_scope_id = ?", (session_id,))
-            connection.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-            purged += 1
+        purged = 0
+        now = utc_now()
+        for row in rows:
+            session_id = str(row["session_id"])
+            with self.state_files.session_lock(session_id), self._write() as connection:
+                current = connection.execute(
+                    "SELECT status FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if current is None or current["status"] != SessionStatus.tombstoned.value:
+                    continue
+                self.state_files.fence_subagents(
+                    session_id,
+                    reason="owner session tombstoned",
+                    now=now,
+                )
+                if not self._session_is_quiescent(connection, session_id):
+                    continue
+                run_rows = connection.execute(
+                    "SELECT logical_run_id FROM logical_runs WHERE session_id = ?",
+                    (session_id,),
+                ).fetchall()
+                self._delete_run_bundles(
+                    connection,
+                    [run["logical_run_id"] for run in run_rows],
+                )
+                connection.execute(
+                    "DELETE FROM session_events WHERE session_id = ?",
+                    (session_id,),
+                )
+                connection.execute(
+                    "DELETE FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                )
+                purged += 1
         return purged
 
-    def _tombstone_expired_sessions(self, connection: sqlite3.Connection, now: datetime) -> int:
-        rows = connection.execute(
-            """
-            SELECT * FROM sessions
-            WHERE status = ?
-            ORDER BY updated_at DESC, session_id
-            """,
-            (SessionStatus.active.value,),
-        ).fetchall()
+    def _tombstone_expired_sessions(self, now: datetime) -> int:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM sessions
+                WHERE status = ?
+                ORDER BY updated_at DESC, session_id
+                """,
+                (SessionStatus.active.value,),
+            ).fetchall()
         excess_ids = {row["session_id"] for row in rows[self.max_sessions :]}
         cutoff = now - timedelta(days=self.max_session_age_days) if self.max_session_age_days is not None else None
         if cutoff is not None:
@@ -455,25 +528,28 @@ class SQLiteSessionStore:
 
         tombstoned = 0
         for row in reversed(rows):
-            session_id = row["session_id"]
-            if session_id not in excess_ids or not self._session_is_quiescent(connection, session_id):
+            session_id = str(row["session_id"])
+            if session_id not in excess_ids:
                 continue
-            self._fence_subagents_for_tombstone(connection, session_id=session_id, now=now)
-            connection.execute(
-                """
-                UPDATE sessions
-                SET status = ?, tombstoned_at = ?, updated_at = ?
-                WHERE session_id = ? AND status = ?
-                """,
-                (
-                    SessionStatus.tombstoned.value,
-                    _dt(now),
-                    _dt(now),
-                    session_id,
-                    SessionStatus.active.value,
-                ),
-            )
-            tombstoned += 1
+            with self.state_files.session_lock(session_id), self._write() as connection:
+                current = self._required_session(connection, session_id)
+                if current.status is not SessionStatus.active or not self._session_is_quiescent(connection, session_id):
+                    continue
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = ?, tombstoned_at = ?, updated_at = ?
+                    WHERE session_id = ? AND status = ?
+                    """,
+                    (
+                        SessionStatus.tombstoned.value,
+                        _dt(now),
+                        _dt(now),
+                        session_id,
+                        SessionStatus.active.value,
+                    ),
+                )
+                tombstoned += 1
         return tombstoned
 
     @staticmethod
@@ -489,29 +565,10 @@ class SQLiteSessionStore:
         ).fetchone()
         return row is not None
 
-    @classmethod
-    def _session_is_quiescent(cls, connection: sqlite3.Connection, session_id: str) -> bool:
-        if cls._session_has_nonterminal_main_run(connection, session_id):
-            return False
-        child_rows = connection.execute(
-            "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ?",
-            (session_id,),
-        ).fetchall()
-        return all(SubagentExecutionRecord.model_validate_json(row["record_json"]).terminal for row in child_rows)
-
-    @staticmethod
-    def _prune_unreferenced_subagent_descriptors(connection: sqlite3.Connection) -> int:
-        rows = connection.execute("SELECT record_json FROM subagent_executions").fetchall()
-        referenced = {SubagentExecutionRecord.model_validate_json(row["record_json"]).descriptor_id for row in rows}
-        if referenced:
-            placeholders = ",".join("?" for _ in referenced)
-            cursor = connection.execute(
-                f"DELETE FROM subagent_plan_descriptors WHERE descriptor_id NOT IN ({placeholders})",  # noqa: S608
-                tuple(sorted(referenced)),
-            )
-        else:
-            cursor = connection.execute("DELETE FROM subagent_plan_descriptors")
-        return cursor.rowcount
+    def _session_is_quiescent(self, connection: sqlite3.Connection, session_id: str) -> bool:
+        return not self._session_has_nonterminal_main_run(
+            connection, session_id
+        ) and not self.state_files.session_has_nonterminal_subagents(session_id)
 
     def _maybe_vacuum(self, now: datetime, *, force: bool) -> bool:
         page_size = int(self._connection.execute("PRAGMA page_size").fetchone()[0])
@@ -560,6 +617,7 @@ class SQLiteSessionStore:
         session_id: str | None = None,
     ) -> SessionRecord:
         resolved_id = session_id or uuid.uuid4().hex[:12]
+        self.state_files.session_dir(resolved_id)
         now = utc_now()
         with self._write() as connection:
             try:
@@ -601,87 +659,73 @@ class SQLiteSessionStore:
             ).fetchall()
         return tuple(self._session_from_row(row) for row in rows)
 
+    def get_session_summary(self, session_id: str) -> SessionSummary | None:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT s.*, r.input_preview, r.output_preview,
+                       COALESCE(r.message_count, 0) AS message_count,
+                       COALESCE(r.display_event_count, 0) AS display_event_count,
+                       lr.model, lr.model_profile_id
+                FROM sessions AS s
+                LEFT JOIN revisions AS r ON r.revision_id = s.head_revision_id
+                LEFT JOIN logical_runs AS lr ON lr.logical_run_id = r.logical_run_id
+                WHERE s.session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return SessionSummary(
+            session_id=row["session_id"],
+            workspace_ref=row["workspace_ref"],
+            status=SessionStatus(row["status"]),
+            head_revision_id=row["head_revision_id"],
+            created_at=_parse_required_dt(row["created_at"]),
+            updated_at=_parse_required_dt(row["updated_at"]),
+            input_preview=row["input_preview"],
+            output_preview=row["output_preview"],
+            message_count=row["message_count"],
+            display_event_count=row["display_event_count"],
+            model=row["model"],
+            model_profile_id=row["model_profile_id"],
+        )
+
     def tombstone_session(self, session_id: str) -> SessionRecord:
         now = utc_now()
-        with self._write() as connection:
-            row = self._required_row(connection, "sessions", "session_id", session_id)
-            session = self._session_from_row(row)
-            if session.status is SessionStatus.tombstoned:
-                return session
-            if self._session_has_nonterminal_main_run(connection, session_id):
-                raise InvalidTransitionError(f"Cannot tombstone session {session_id!r} while a main run is nonterminal")
-            self._fence_subagents_for_tombstone(
-                connection,
-                session_id=session_id,
+        with self.state_files.session_lock(session_id):
+            with self._write() as connection:
+                row = self._required_row(connection, "sessions", "session_id", session_id)
+                session = self._session_from_row(row)
+                if session.status is SessionStatus.active:
+                    if self._session_has_nonterminal_main_run(connection, session_id):
+                        raise InvalidTransitionError(
+                            f"Cannot tombstone session {session_id!r} while a main run is nonterminal"
+                        )
+                    connection.execute(
+                        """
+                        UPDATE sessions
+                        SET status = ?, tombstoned_at = ?, updated_at = ?
+                        WHERE session_id = ?
+                        """,
+                        (
+                            SessionStatus.tombstoned.value,
+                            _dt(now),
+                            _dt(now),
+                            session_id,
+                        ),
+                    )
+                    tombstoned = self._session_from_row(
+                        self._required_row(connection, "sessions", "session_id", session_id)
+                    )
+                else:
+                    tombstoned = session
+            self.state_files.fence_subagents(
+                session_id,
+                reason="owner session tombstoned",
                 now=now,
             )
-            connection.execute(
-                """
-                UPDATE sessions
-                SET status = ?, tombstoned_at = ?, updated_at = ?
-                WHERE session_id = ?
-                """,
-                (
-                    SessionStatus.tombstoned.value,
-                    _dt(now),
-                    _dt(now),
-                    session_id,
-                ),
-            )
-            return self._session_from_row(self._required_row(connection, "sessions", "session_id", session_id))
-
-    def _fence_subagents_for_tombstone(
-        self,
-        connection: sqlite3.Connection,
-        *,
-        session_id: str,
-        now: datetime,
-    ) -> None:
-        reason = "owner session tombstoned"
-        rows = connection.execute(
-            "SELECT execution_id, record_json FROM subagent_executions WHERE owner_scope_id = ?",
-            (session_id,),
-        ).fetchall()
-        for row in rows:
-            record = SubagentExecutionRecord.model_validate_json(row["record_json"])
-            if record.terminal:
-                continue
-            cancelled = record.model_copy(
-                update={
-                    "state": SubagentExecutionState.cancelled,
-                    "input_state": (
-                        SubagentInputState.applied
-                        if record.input_state is SubagentInputState.applied
-                        else SubagentInputState.rejected
-                    ),
-                    "error": reason,
-                    "completed_at": now,
-                }
-            )
-            connection.execute(
-                """
-                UPDATE subagent_executions
-                SET record_json = ?, input_open = 0, cancel_requested = 1,
-                    cancellation_reason = ?, updated_at = ?
-                WHERE execution_id = ?
-                """,
-                (cancelled.model_dump_json(), reason, _dt(now), record.execution_id),
-            )
-            connection.execute(
-                """
-                UPDATE subagent_inputs
-                SET state = ?, rejection_reason = ?, updated_at = ?
-                WHERE execution_id = ? AND state IN (?, ?)
-                """,
-                (
-                    InputState.rejected.value,
-                    reason,
-                    _dt(now),
-                    record.execution_id,
-                    InputState.accepted.value,
-                    InputState.enqueued.value,
-                ),
-            )
+            return tombstoned
 
     def start_run(self, request: StartRunRequest) -> LogicalRunRecord:
         now = utc_now()
@@ -795,18 +839,28 @@ class SQLiteSessionStore:
         self,
         checkpoint: ExecutionCheckpointRecord,
     ) -> ExecutionCheckpointRecord:
-        with self._write() as connection:
-            execution = self._execution_from_row(
-                self._required_row(connection, "executions", "execution_id", checkpoint.execution_id)
-            )
-            if execution.logical_run_id != checkpoint.logical_run_id:
-                raise ValueError("Execution checkpoint does not match its logical run")
-            existing_row = connection.execute(
-                "SELECT * FROM execution_checkpoints WHERE execution_id = ?",
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT e.logical_run_id, lr.session_id
+                FROM executions AS e
+                JOIN logical_runs AS lr ON lr.logical_run_id = e.logical_run_id
+                WHERE e.execution_id = ?
+                """,
                 (checkpoint.execution_id,),
             ).fetchone()
-            if existing_row is not None:
-                existing = self._execution_checkpoint_from_row(existing_row)
+        if row is None:
+            raise KeyError(checkpoint.execution_id)
+        if row["logical_run_id"] != checkpoint.logical_run_id:
+            raise ValueError("Execution checkpoint does not match its logical run")
+        session_id = str(row["session_id"])
+        with self.state_files.session_lock(session_id):
+            session = self.get_session(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            self._ensure_active_session(session)
+            existing = self.get_execution_checkpoint(checkpoint.execution_id)
+            if existing is not None:
                 if existing.segment_index > checkpoint.segment_index:
                     raise InvalidTransitionError("Execution checkpoint segment index cannot move backwards")
                 if existing.segment_index == checkpoint.segment_index:
@@ -816,38 +870,52 @@ class SQLiteSessionStore:
                     if comparable_existing != checkpoint:
                         raise ValueError("Execution checkpoint segment was reused with different content")
                     return existing
-            created_at = existing_row["created_at"] if existing_row is not None else _dt(checkpoint.created_at)
-            connection.execute(
-                """
-                INSERT INTO execution_checkpoints(
-                    execution_id, logical_run_id, segment_index, segment_status,
-                    payload_json, deferred_requests_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(execution_id) DO UPDATE SET
-                    segment_index = excluded.segment_index,
-                    segment_status = excluded.segment_status,
-                    payload_json = excluded.payload_json,
-                    deferred_requests_json = excluded.deferred_requests_json,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    checkpoint.execution_id,
-                    checkpoint.logical_run_id,
-                    checkpoint.segment_index,
-                    checkpoint.segment_status,
-                    checkpoint.payload.model_dump_json(),
-                    (_json(checkpoint.deferred_requests) if checkpoint.deferred_requests is not None else None),
-                    created_at,
-                    _dt(checkpoint.updated_at),
+            stored_checkpoint = (
+                checkpoint if existing is None else checkpoint.model_copy(update={"created_at": existing.created_at})
+            )
+            self.state_files.write_checkpoint(
+                session_id,
+                CheckpointStateFile(
+                    checkpoint=stored_checkpoint,
+                    previous_checkpoint=existing,
                 ),
             )
-            row = connection.execute(
-                "SELECT * FROM execution_checkpoints WHERE execution_id = ?",
-                (checkpoint.execution_id,),
-            ).fetchone()
-            if row is None:  # pragma: no cover - insert invariant
-                raise RuntimeError("Execution checkpoint insert did not persist")
-            return self._execution_checkpoint_from_row(row)
+            with self._write() as connection:
+                self._ensure_active_session(self._required_session(connection, session_id))
+                created_at = _dt(existing.created_at) if existing is not None else _dt(checkpoint.created_at)
+                connection.execute(
+                    """
+                    INSERT INTO execution_checkpoints(
+                        execution_id, logical_run_id, session_id, segment_index,
+                        segment_status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(execution_id) DO UPDATE SET
+                        segment_index = excluded.segment_index,
+                        segment_status = excluded.segment_status,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        checkpoint.execution_id,
+                        checkpoint.logical_run_id,
+                        session_id,
+                        stored_checkpoint.segment_index,
+                        stored_checkpoint.segment_status,
+                        created_at,
+                        _dt(stored_checkpoint.updated_at),
+                    ),
+                )
+            try:
+                self.state_files.write_checkpoint(
+                    session_id,
+                    CheckpointStateFile(checkpoint=stored_checkpoint),
+                )
+            except OSError as exc:
+                logger.warning(
+                    "Deferred committed checkpoint compaction for execution %s: %s",
+                    stored_checkpoint.execution_id,
+                    exc,
+                )
+            return stored_checkpoint.model_copy(deep=True)
 
     def get_execution_checkpoint(self, execution_id: str) -> ExecutionCheckpointRecord | None:
         with self._lock:
@@ -855,7 +923,27 @@ class SQLiteSessionStore:
                 "SELECT * FROM execution_checkpoints WHERE execution_id = ?",
                 (execution_id,),
             ).fetchone()
-        return self._execution_checkpoint_from_row(row) if row is not None else None
+        if row is None:
+            return None
+        state = self.state_files.read_checkpoint(str(row["session_id"]), execution_id)
+        for checkpoint in (state.checkpoint, state.previous_checkpoint):
+            if checkpoint is not None and self._checkpoint_matches_row(checkpoint, row):
+                return checkpoint
+        raise RuntimeError(f"Checkpoint file metadata mismatch for {execution_id!r}")
+
+    @staticmethod
+    def _checkpoint_matches_row(
+        checkpoint: ExecutionCheckpointRecord,
+        row: sqlite3.Row,
+    ) -> bool:
+        return (
+            checkpoint.execution_id == row["execution_id"]
+            and checkpoint.logical_run_id == row["logical_run_id"]
+            and checkpoint.segment_index == row["segment_index"]
+            and checkpoint.segment_status == row["segment_status"]
+            and _dt(checkpoint.created_at) == row["created_at"]
+            and _dt(checkpoint.updated_at) == row["updated_at"]
+        )
 
     def set_run_status(
         self,
@@ -1085,76 +1173,81 @@ class SQLiteSessionStore:
         logical_run_id = str(uuid.uuid4())
         execution_id = str(uuid.uuid4())
         revision_id = str(uuid.uuid4())
-        with self._write() as connection:
-            session = self._required_session(connection, session_id)
+        with self.state_files.session_lock(session_id):
+            with self._lock:
+                row = self._connection.execute(
+                    "SELECT * FROM sessions WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+            if row is None:
+                raise KeyError(session_id)
+            session = self._session_from_row(row)
             self._ensure_active_session(session)
-            connection.execute(
-                """
-                INSERT INTO logical_runs(
-                    logical_run_id, session_id, execution_id,
-                    expected_head_revision_id, model, model_profile_id, idempotency_key,
-                    status, input_open, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-                """,
-                (
-                    logical_run_id,
-                    session_id,
-                    execution_id,
-                    session.head_revision_id,
-                    model,
-                    model_profile_id,
-                    f"offline-import:{revision_id}",
-                    LogicalRunStatus.completed.value,
-                    _dt(now),
-                    _dt(now),
-                ),
-            )
-            connection.execute(
-                """
-                INSERT INTO executions(
-                    execution_id, logical_run_id, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    execution_id,
-                    logical_run_id,
-                    LogicalRunStatus.completed.value,
-                    _dt(now),
-                    _dt(now),
-                ),
-            )
             terminal = dict(payload.terminal)
             terminal.setdefault("status", LogicalRunStatus.completed.value)
             terminal["import_source"] = source
-            connection.execute(
-                """
-                INSERT INTO revisions(
-                    revision_id, session_id, logical_run_id, commit_kind,
-                    parent_revision_id, message_history_json,
-                    resumable_state_json, input_ledger_json,
-                    display_projection_json, usage_json, terminal_json, created_at
-                ) VALUES (?, ?, ?, 'offline_import', ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    revision_id,
-                    session_id,
-                    logical_run_id,
-                    session.head_revision_id,
-                    _json(payload.message_history),
-                    _json(payload.resumable_state),
-                    _json(payload.input_ledger),
-                    _json(payload.display_projection),
-                    _json(payload.usage),
-                    _json(terminal),
-                    _dt(now),
-                ),
+            revision = RevisionRecord(
+                revision_id=revision_id,
+                session_id=session_id,
+                logical_run_id=logical_run_id,
+                commit_kind="offline_import",
+                parent_revision_id=session.head_revision_id,
+                message_history=payload.message_history,
+                resumable_state=payload.resumable_state,
+                input_ledger=payload.input_ledger,
+                display_projection=payload.display_projection,
+                usage=payload.usage,
+                terminal=terminal,
+                created_at=now,
             )
-            connection.execute(
-                "UPDATE sessions SET head_revision_id = ?, updated_at = ? WHERE session_id = ?",
-                (revision_id, _dt(now), session_id),
-            )
-            revision = self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
-            self._prune_session_turns(connection, session_id)
+            self.state_files.write_revision(RevisionStateFile(revision=revision))
+            with self._write() as connection:
+                current = self._required_session(connection, session_id)
+                self._ensure_active_session(current)
+                if current.head_revision_id != session.head_revision_id:
+                    raise InvalidTransitionError("Session head changed during offline revision import")
+                connection.execute(
+                    """
+                    INSERT INTO logical_runs(
+                        logical_run_id, session_id, execution_id,
+                        expected_head_revision_id, model, model_profile_id, idempotency_key,
+                        status, input_open, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        logical_run_id,
+                        session_id,
+                        execution_id,
+                        session.head_revision_id,
+                        model,
+                        model_profile_id,
+                        f"offline-import:{revision_id}",
+                        LogicalRunStatus.completed.value,
+                        _dt(now),
+                        _dt(now),
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO executions(
+                        execution_id, logical_run_id, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        execution_id,
+                        logical_run_id,
+                        LogicalRunStatus.completed.value,
+                        _dt(now),
+                        _dt(now),
+                    ),
+                )
+                self._insert_revision_metadata(connection, revision, input_preview=None)
+                connection.execute(
+                    "UPDATE sessions SET head_revision_id = ?, updated_at = ? WHERE session_id = ?",
+                    (revision_id, _dt(now), session_id),
+                )
+                self._prune_session_turns(connection, session_id)
+            self._cleanup_orphan_state_files()
             return revision
 
     def commit_revision(
@@ -1165,16 +1258,14 @@ class SQLiteSessionStore:
         payload: RevisionPayload,
         terminal_status: LogicalRunStatus,
     ) -> RevisionRecord:
-        now = utc_now()
-        with self._write() as connection:
-            return self._commit_revision(
-                connection,
-                logical_run_id,
-                commit_kind=commit_kind,
-                payload=payload,
-                terminal_status=terminal_status,
-                now=now,
-            )
+        revision, _event = self._commit_revision_document(
+            logical_run_id,
+            commit_kind=commit_kind,
+            payload=payload,
+            terminal_status=terminal_status,
+            event_type=None,
+        )
+        return revision
 
     def commit_terminal(
         self,
@@ -1185,138 +1276,201 @@ class SQLiteSessionStore:
         terminal_status: LogicalRunStatus,
         event_type: str,
     ) -> tuple[RevisionRecord, EventRecord]:
-        now = utc_now()
-        with self._write() as connection:
-            revision = self._commit_revision(
-                connection,
-                logical_run_id,
-                commit_kind=commit_kind,
-                payload=payload,
-                terminal_status=terminal_status,
-                now=now,
-            )
-            event = self._append_event(
-                connection,
-                revision.session_id,
-                event_type,
-                {"revision_id": revision.revision_id, **payload.terminal},
-                event_id=f"terminal:{logical_run_id}",
-                logical_run_id=logical_run_id,
-                now=now,
-            )
-            return revision, event
+        revision, event = self._commit_revision_document(
+            logical_run_id,
+            commit_kind=commit_kind,
+            payload=payload,
+            terminal_status=terminal_status,
+            event_type=event_type,
+        )
+        if event is None:  # pragma: no cover - caller invariant
+            raise RuntimeError("Terminal commit did not publish its canonical event")
+        return revision, event
 
-    def _commit_revision(
+    def _commit_revision_document(
         self,
-        connection: sqlite3.Connection,
         logical_run_id: str,
         *,
         commit_kind: str,
         payload: RevisionPayload,
         terminal_status: LogicalRunStatus,
-        now: datetime,
-    ) -> RevisionRecord:
+        event_type: str | None,
+    ) -> tuple[RevisionRecord, EventRecord | None]:
         if terminal_status not in _TERMINAL_RUN_STATES:
             raise ValueError("A committed revision requires a terminal run status")
-        run = self._run_from_row(self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id))
-        session = self._required_session(connection, run.session_id)
-        self._ensure_active_session(session)
-        existing = connection.execute(
-            """
-            SELECT * FROM revisions
-            WHERE logical_run_id = ? AND commit_kind = ?
-            """,
-            (logical_run_id, commit_kind),
-        ).fetchone()
-        if existing is not None:
-            revision = self._revision_from_row(existing)
-            if self._revision_payload(revision) != payload:
-                raise ValueError("Terminal revision idempotency key has different payload")
-            connection.execute(
-                "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM logical_runs WHERE logical_run_id = ?",
                 (logical_run_id,),
-            )
-            self._prune_session_turns(connection, run.session_id)
-            return revision
-        if terminal_status not in _RUN_TRANSITIONS[run.status]:
-            raise InvalidTransitionError(f"Cannot transition run from {run.status.value} to {terminal_status.value}")
-        revision_id = str(uuid.uuid4())
+            ).fetchone()
+        if row is None:
+            raise KeyError(logical_run_id)
+        initial_run = self._run_from_row(row)
+        now = utc_now()
+        with self.state_files.session_lock(initial_run.session_id):
+            session = self.get_session(initial_run.session_id)
+            if session is None:
+                raise KeyError(initial_run.session_id)
+            self._ensure_active_session(session)
+            with self._lock:
+                existing_row = self._connection.execute(
+                    """
+                    SELECT * FROM revisions
+                    WHERE logical_run_id = ? AND commit_kind = ?
+                    """,
+                    (logical_run_id, commit_kind),
+                ).fetchone()
+            if existing_row is not None:
+                revision = self._revision_from_row(existing_row)
+                if self._revision_payload(revision) != payload:
+                    raise ValueError("Terminal revision idempotency key has different payload")
+            else:
+                revision = RevisionRecord(
+                    revision_id=str(uuid.uuid4()),
+                    session_id=initial_run.session_id,
+                    logical_run_id=logical_run_id,
+                    commit_kind=commit_kind,
+                    parent_revision_id=initial_run.expected_head_revision_id,
+                    message_history=payload.message_history,
+                    resumable_state=payload.resumable_state,
+                    input_ledger=payload.input_ledger,
+                    display_projection=payload.display_projection,
+                    usage=payload.usage,
+                    terminal=payload.terminal,
+                    created_at=now,
+                )
+                self.state_files.write_revision(RevisionStateFile(revision=revision))
+
+            with self._write() as connection:
+                run = self._run_from_row(
+                    self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id)
+                )
+                session = self._required_session(connection, run.session_id)
+                self._ensure_active_session(session)
+                published = connection.execute(
+                    """
+                    SELECT revision_id FROM revisions
+                    WHERE logical_run_id = ? AND commit_kind = ?
+                    """,
+                    (logical_run_id, commit_kind),
+                ).fetchone()
+                if published is None:
+                    if terminal_status not in _RUN_TRANSITIONS[run.status]:
+                        raise InvalidTransitionError(
+                            f"Cannot transition run from {run.status.value} to {terminal_status.value}"
+                        )
+                    input_row = connection.execute(
+                        "SELECT content_json FROM run_inputs WHERE logical_run_id = ? AND order_index = 0",
+                        (logical_run_id,),
+                    ).fetchone()
+                    input_preview = (
+                        _preview_json_values(_array(input_row["content_json"])) if input_row is not None else None
+                    )
+                    self._insert_revision_metadata(
+                        connection,
+                        revision,
+                        input_preview=input_preview,
+                    )
+                    cursor = connection.execute(
+                        """
+                        UPDATE sessions
+                        SET head_revision_id = ?, updated_at = ?
+                        WHERE session_id = ? AND status = ?
+                        """,
+                        (
+                            revision.revision_id,
+                            _dt(now),
+                            run.session_id,
+                            SessionStatus.active.value,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise TombstonedSessionError(f"Session {run.session_id!r} is tombstoned")
+                    connection.execute(
+                        """
+                        UPDATE run_inputs
+                        SET state = ?, rejection_reason = ?, updated_at = ?
+                        WHERE logical_run_id = ? AND state IN (?, ?)
+                        """,
+                        (
+                            InputState.rejected.value,
+                            f"run terminated as {terminal_status.value} before input application",
+                            _dt(now),
+                            logical_run_id,
+                            InputState.accepted.value,
+                            InputState.enqueued.value,
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE logical_runs
+                        SET status = ?, input_open = 0, pending_action_batch_id = NULL,
+                            updated_at = ? WHERE logical_run_id = ?
+                        """,
+                        (terminal_status.value, _dt(now), logical_run_id),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE executions SET status = ?, updated_at = ?
+                        WHERE execution_id = ?
+                        """,
+                        (terminal_status.value, _dt(now), run.execution_id),
+                    )
+                elif published["revision_id"] != revision.revision_id:
+                    raise RuntimeError("Revision publication disagrees with its state file")
+                connection.execute(
+                    "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+                    (logical_run_id,),
+                )
+                event = (
+                    self._append_event(
+                        connection,
+                        revision.session_id,
+                        event_type,
+                        {"revision_id": revision.revision_id, **payload.terminal},
+                        event_id=f"terminal:{logical_run_id}",
+                        logical_run_id=logical_run_id,
+                        now=now,
+                    )
+                    if event_type is not None
+                    else None
+                )
+                self._prune_session_turns(connection, run.session_id)
+            try:
+                self.state_files.remove_checkpoint(run.session_id, run.execution_id)
+            except OSError as exc:
+                logger.warning("Deferred checkpoint-file cleanup after filesystem error: %s", exc)
+            self._cleanup_orphan_state_files()
+            return revision, event
+
+    def _insert_revision_metadata(
+        self,
+        connection: sqlite3.Connection,
+        revision: RevisionRecord,
+        *,
+        input_preview: str | None,
+    ) -> None:
         connection.execute(
             """
             INSERT INTO revisions(
                 revision_id, session_id, logical_run_id, commit_kind,
-                parent_revision_id, message_history_json, resumable_state_json,
-                input_ledger_json, display_projection_json, usage_json,
-                terminal_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                parent_revision_id, message_count, display_event_count,
+                input_preview, output_preview, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                revision_id,
-                run.session_id,
-                logical_run_id,
-                commit_kind,
-                run.expected_head_revision_id,
-                _json(payload.message_history),
-                _json(payload.resumable_state),
-                _json(payload.input_ledger),
-                _json(payload.display_projection),
-                _json(payload.usage),
-                _json(payload.terminal),
-                _dt(now),
+                revision.revision_id,
+                revision.session_id,
+                revision.logical_run_id,
+                revision.commit_kind,
+                revision.parent_revision_id,
+                len(revision.message_history),
+                len(revision.display_projection),
+                input_preview,
+                _preview_json_value(revision.terminal.get("output")),
+                _dt(revision.created_at),
             ),
         )
-        cursor = connection.execute(
-            """
-            UPDATE sessions
-            SET head_revision_id = ?, updated_at = ?
-            WHERE session_id = ? AND status = ?
-            """,
-            (
-                revision_id,
-                _dt(now),
-                run.session_id,
-                SessionStatus.active.value,
-            ),
-        )
-        if cursor.rowcount != 1:
-            raise TombstonedSessionError(f"Session {run.session_id!r} is tombstoned")
-        connection.execute(
-            """
-            UPDATE run_inputs
-            SET state = ?, rejection_reason = ?, updated_at = ?
-            WHERE logical_run_id = ? AND state IN (?, ?)
-            """,
-            (
-                InputState.rejected.value,
-                f"run terminated as {terminal_status.value} before input application",
-                _dt(now),
-                logical_run_id,
-                InputState.accepted.value,
-                InputState.enqueued.value,
-            ),
-        )
-        connection.execute(
-            """
-            UPDATE logical_runs
-            SET status = ?, input_open = 0, pending_action_batch_id = NULL,
-                updated_at = ? WHERE logical_run_id = ?
-            """,
-            (terminal_status.value, _dt(now), logical_run_id),
-        )
-        connection.execute(
-            """
-            UPDATE executions SET status = ?, updated_at = ?
-            WHERE execution_id = ?
-            """,
-            (terminal_status.value, _dt(now), run.execution_id),
-        )
-        connection.execute(
-            "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
-            (logical_run_id,),
-        )
-        revision = self._revision_from_row(self._required_row(connection, "revisions", "revision_id", revision_id))
-        self._prune_session_turns(connection, run.session_id)
-        return revision
 
     def get_revision(self, revision_id: str) -> RevisionRecord | None:
         with self._lock:
@@ -1710,21 +1864,6 @@ class SQLiteSessionStore:
         )
 
     @staticmethod
-    def _execution_checkpoint_from_row(row: sqlite3.Row) -> ExecutionCheckpointRecord:
-        return ExecutionCheckpointRecord(
-            execution_id=row["execution_id"],
-            logical_run_id=row["logical_run_id"],
-            segment_index=row["segment_index"],
-            segment_status=row["segment_status"],
-            payload=RevisionPayload.model_validate_json(row["payload_json"]),
-            deferred_requests=(
-                _object(row["deferred_requests_json"]) if row["deferred_requests_json"] is not None else None
-            ),
-            created_at=_parse_required_dt(row["created_at"]),
-            updated_at=_parse_required_dt(row["updated_at"]),
-        )
-
-    @staticmethod
     def _input_from_row(row: sqlite3.Row) -> InputRecord:
         return InputRecord(
             input_id=row["input_id"],
@@ -1741,22 +1880,18 @@ class SQLiteSessionStore:
             updated_at=_parse_required_dt(row["updated_at"]),
         )
 
-    @staticmethod
-    def _revision_from_row(row: sqlite3.Row) -> RevisionRecord:
-        return RevisionRecord(
-            revision_id=row["revision_id"],
-            session_id=row["session_id"],
-            logical_run_id=row["logical_run_id"],
-            commit_kind=row["commit_kind"],
-            parent_revision_id=row["parent_revision_id"],
-            message_history=_array(row["message_history_json"]),
-            resumable_state=_object(row["resumable_state_json"]),
-            input_ledger=_object(row["input_ledger_json"]),
-            display_projection=_array(row["display_projection_json"]),
-            usage=_object(row["usage_json"]),
-            terminal=_object(row["terminal_json"]),
-            created_at=_parse_required_dt(row["created_at"]),
-        )
+    def _revision_from_row(self, row: sqlite3.Row) -> RevisionRecord:
+        state = self.state_files.read_revision(str(row["session_id"]), str(row["revision_id"]))
+        revision = state.revision
+        if (
+            revision.logical_run_id != row["logical_run_id"]
+            or revision.commit_kind != row["commit_kind"]
+            or revision.parent_revision_id != row["parent_revision_id"]
+            or len(revision.message_history) != row["message_count"]
+            or len(revision.display_projection) != row["display_event_count"]
+        ):
+            raise RuntimeError(f"Revision file metadata mismatch for {revision.revision_id!r}")
+        return revision
 
     @staticmethod
     def _revision_payload(revision: RevisionRecord) -> RevisionPayload:
@@ -1780,6 +1915,72 @@ class SQLiteSessionStore:
             payload=_object(row["payload_json"]),
             created_at=_parse_required_dt(row["created_at"]),
         )
+
+
+def _reset_disposable_legacy_database(path: Path) -> None:
+    """Replace the disposable schema-v5 store at the explicit v6 cutover boundary."""
+    if not path.exists():
+        return
+    try:
+        with sqlite3.connect(path) as connection:
+            marker_table = connection.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_metadata'"
+            ).fetchone()
+            if marker_table is None:
+                return
+            marker = connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+            schema_fingerprint = _schema_fingerprint(connection)
+    except sqlite3.DatabaseError:
+        return
+    if (
+        marker is None
+        or str(marker[0]) not in _LEGACY_RESET_SCHEMA_VERSIONS
+        or schema_fingerprint != _LEGACY_SCHEMA_V5_FINGERPRINT
+    ):
+        return
+    logger.warning(
+        "Resetting disposable YAACLI schema-v%s data at %s for the file-state cutover",
+        marker[0],
+        path,
+    )
+    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
+        candidate.unlink(missing_ok=True)
+
+
+def _schema_fingerprint(connection: sqlite3.Connection) -> str:
+    rows = connection.execute(
+        """
+        SELECT type, name, sql
+        FROM sqlite_schema
+        WHERE type IN ('table', 'index')
+          AND name NOT LIKE 'sqlite_%'
+          AND sql IS NOT NULL
+        ORDER BY type, name
+        """
+    ).fetchall()
+    payload = "\n".join(f"{row[0]}:{row[1]}:{' '.join(str(row[2]).strip().removesuffix(';').split())}" for row in rows)
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _preview_json_values(values: Sequence[JsonValue]) -> str | None:
+    if len(values) == 1:
+        return _preview_json_value(values[0])
+    return _bounded_preview(json.dumps(list(values), ensure_ascii=False))
+
+
+def _preview_json_value(value: JsonValue | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return _bounded_preview(value)
+    return _bounded_preview(json.dumps(value, ensure_ascii=False))
+
+
+def _bounded_preview(value: str, *, limit: int = 2000) -> str:
+    normalized = value.strip()
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 3] + "..."
 
 
 def _dt(value: datetime) -> str:
