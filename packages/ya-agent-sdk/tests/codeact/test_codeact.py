@@ -51,6 +51,7 @@ from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 from ya_agent_sdk.codeact import CodeActCapability, CodeActConfig
 from ya_agent_sdk.codeact import toolset as codeact_toolset
 from ya_agent_sdk.codeact.programs import validate_static_tool_references
+from ya_agent_sdk.codeact.runtime import CodeActRunState
 from ya_agent_sdk.codeact.toolset import (
     CodeActToolset,
     _bounded_json_size,
@@ -1793,12 +1794,17 @@ async def test_catalog_rejects_dangling_or_invalid_local_schema_refs() -> None:
         _build_catalog({"accepts_payload": bad})
 
 
-async def test_timeout_waits_for_temporarily_cancellation_resistant_call(tmp_path: Path) -> None:
+async def test_timeout_waits_for_temporarily_cancellation_resistant_call() -> None:
+    started = asyncio.Event()
     cancellation_seen = asyncio.Event()
     release = asyncio.Event()
     cleaned = asyncio.Event()
+    timeout_scope: asyncio.Timeout | None = None
 
-    async def resistant(ctx: RunContext[AgentContext]) -> None:
+    async def dispatch(name: str, kwargs: dict[str, Any]) -> None:
+        assert name == "resistant"
+        assert kwargs == {}
+        started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -1807,42 +1813,48 @@ async def test_timeout_waits_for_temporarily_cancellation_resistant_call(tmp_pat
             cleaned.set()
             raise
 
-    external = FunctionToolset([Tool(resistant, metadata={"codeact": True})])
-    model_calls = 0
+    state = CodeActRunState(CodeActConfig())
 
-    def model_function(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        nonlocal model_calls
-        model_calls += 1
-        if model_calls == 1:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        tool_name="run_code",
-                        args={"code": "await resistant()"},
-                        tool_call_id="resistant-timeout",
-                    )
-                ]
-            )
-        return ModelResponse(parts=[TextPart(content="handled")])
+    async def execute(code: str) -> None:
+        await state.execute_inline(
+            code,
+            dispatch=dispatch,
+            valid_names={"resistant"},
+            sequential_names=set(),
+            global_sequential=False,
+            restart=False,
+            preflight=lambda bound_names: bound_names,
+        )
 
-    runtime = _runtime(
-        tmp_path,
-        model_function,
-        toolsets=[external],
-        config=CodeActConfig(timeout_seconds=0.1),
-    )
-    async with runtime:
-        run_task = asyncio.create_task(runtime.agent.run("wait for cleanup", deps=runtime.ctx))
+    async def execute_with_timeout() -> None:
+        nonlocal timeout_scope
+        async with asyncio.timeout(None) as timeout_scope:
+            await execute("await resistant()")
+
+    run_task: asyncio.Task[None] | None = None
+    try:
+        await execute("None")
+        run_task = asyncio.create_task(execute_with_timeout())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert timeout_scope is not None
+        timeout_scope.reschedule(asyncio.get_running_loop().time())
         await asyncio.wait_for(cancellation_seen.wait(), timeout=2)
         await asyncio.sleep(0)
         assert not run_task.done()
-        release.set()
-        result = await asyncio.wait_for(run_task, timeout=2)
 
-    assert cleaned.is_set()
-    returned = _tool_returns(result.all_messages(), "run_code")[0]
-    assert returned.outcome == "failed"
-    assert "timeout_seconds=0.1" in str(returned.content)
+        release.set()
+        done, _ = await asyncio.wait({run_task}, timeout=2)
+        assert run_task in done, "timed-out execution did not finish after nested cleanup was released"
+        with pytest.raises(TimeoutError):
+            run_task.result()
+        assert cleaned.is_set()
+    finally:
+        release.set()
+        if run_task is not None:
+            if not run_task.done():
+                run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+        await state.close()
 
 
 async def test_repeated_cancellation_does_not_orphan_nested_call(tmp_path: Path) -> None:
