@@ -81,10 +81,10 @@ from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.subagents import (
     DurableSubagentCompletionDelivery,
     DurableSubagentInboxCapability,
+    FileRetainedSubagentPlanProvider,
+    FileSubagentExecutionStore,
     LocalProcessorSubagentExecutionHost,
     LocalSubagentDriver,
-    SQLiteRetainedSubagentPlanProvider,
-    SQLiteSubagentExecutionStore,
 )
 from yaacli.environment import TUIEnvironment
 from yaacli.guards import GoalGuardCapability
@@ -375,7 +375,7 @@ def _build_delegation_capability(
         resolver.restore(descriptors_by_id[descriptor_id])
         for _route, descriptor_id in sorted(manifest.active_routes.items())
     )
-    store = SQLiteSubagentExecutionStore(durable_database_path)
+    store = FileSubagentExecutionStore(durable_database_path)
     try:
         registry = SubagentRegistry(active_plans)
         for plan in active_plans:
@@ -393,7 +393,7 @@ def _build_delegation_capability(
             driver,
             completion_delivery=DurableSubagentCompletionDelivery(durable_binding_ref),
             deferred_resolver=deferred_resolver,
-            retained_plan_provider=SQLiteRetainedSubagentPlanProvider(store, resolver),
+            retained_plan_provider=FileRetainedSubagentPlanProvider(store, resolver),
             execution_host=LocalProcessorSubagentExecutionHost(),
         )
         return DelegationCapability(

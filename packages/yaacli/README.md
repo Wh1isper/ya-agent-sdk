@@ -153,9 +153,13 @@ yaacli sessions delete <session-id>
 ```
 
 Session IDs may be supplied by unique prefix. The YAACLI 2 product store defaults to
-`~/.yaacli/sessions/sessions-v2.sqlite3`; the former `sessions.sqlite3` is left untouched
-and is not migrated automatically. An explicit `[session] database_path` or
-`YAACLI_DATABASE_PATH` remains authoritative and is validated strictly. Startup
+`~/.yaacli/sessions/sessions-v2.sqlite3`. SQLite contains only transactional metadata
+and small coordination records; grep-friendly revision, checkpoint, and child payloads
+live beside it under `<session-id>/{revisions,checkpoints,subagents}/<id>/state.json`.
+The schema-v5 YAACLI 2 database is intentionally reset in place at this file-state
+cutover; no v3 database or payload migration is created. The former `sessions.sqlite3`
+is left untouched. An explicit `[session] database_path` or `YAACLI_DATABASE_PATH`
+remains authoritative, with state directories placed next to that database. Startup
 maintenance retains 20 complete turns per session and 100 quiescent sessions by
 default; `[session] max_turns_per_session`, `max_sessions`, and the optional
 `max_session_age_days` tune these limits. Nonterminal main and child work is never

@@ -35,6 +35,7 @@ from yaacli.display_replay import BoundedDisplayReplay
 from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.executor import LocalExecutionWorker, LocalRuntimeSpec
 from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.subagents import FileSubagentExecutionStore
 from yaacli.errors import safe_exception_str
 from yaacli.logging import get_logger
 from yaacli.model_profiles import (
@@ -276,6 +277,16 @@ async def _run_headless_prompt(
         max_session_age_days=config.session.max_session_age_days,
     )
     try:
+        recovery_store = FileSubagentExecutionStore(database_path)
+        try:
+            recovered_child_ids = recovery_store.recover_orphaned_executions()
+            if recovered_child_ids:
+                logger.info(
+                    "Marked %d interrupted subagent executions lost",
+                    len(recovered_child_ids),
+                )
+        finally:
+            recovery_store.close_sync()
         execution_worker = await LocalExecutionWorker.create(
             store=store,
             state_path=database_path,

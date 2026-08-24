@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from collections.abc import Sequence
 from typing import Protocol
@@ -95,34 +94,10 @@ class SessionApplicationService:
         return summary
 
     def _summarize(self, session: SessionRecord) -> SessionSummary:
-        revision = self.store.get_revision(session.head_revision_id) if session.head_revision_id is not None else None
-        input_preview: str | None = None
-        output_preview: str | None = None
-        model: str | None = None
-        model_profile_id: str | None = None
-        if revision is not None:
-            run = self.store.get_run(revision.logical_run_id)
-            if run is not None:
-                inputs = self.store.list_inputs(run.logical_run_id)
-                if inputs:
-                    input_preview = _preview_json_values(inputs[0].content)
-                model = run.model
-                model_profile_id = run.model_profile_id
-            output_preview = _preview_json_value(revision.terminal.get("output"))
-        return SessionSummary(
-            session_id=session.session_id,
-            workspace_ref=session.workspace_ref,
-            status=session.status,
-            head_revision_id=session.head_revision_id,
-            created_at=session.created_at,
-            updated_at=session.updated_at,
-            input_preview=input_preview,
-            output_preview=output_preview,
-            message_count=len(revision.message_history) if revision is not None else 0,
-            display_event_count=len(revision.display_projection) if revision is not None else 0,
-            model=model,
-            model_profile_id=model_profile_id,
-        )
+        summary = self.store.get_session_summary(session.session_id)
+        if summary is None:
+            raise KeyError(session.session_id)
+        return summary
 
     def _require_coordinator(self) -> SessionExecutionCoordinator:
         if self.coordinator is None:
@@ -304,24 +279,3 @@ class SessionApplicationService:
 
     async def cancel(self, logical_run_id: str, *, reason: str = "cancelled") -> None:
         await self._require_coordinator().cancel(logical_run_id, reason)
-
-
-def _preview_json_values(values: Sequence[JsonValue]) -> str | None:
-    if len(values) == 1:
-        return _preview_json_value(values[0])
-    return _bounded_preview(json.dumps(list(values), ensure_ascii=False))
-
-
-def _preview_json_value(value: JsonValue | None) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return _bounded_preview(value)
-    return _bounded_preview(json.dumps(value, ensure_ascii=False))
-
-
-def _bounded_preview(value: str, *, limit: int = 2000) -> str:
-    normalized = value.strip()
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - 3] + "..."

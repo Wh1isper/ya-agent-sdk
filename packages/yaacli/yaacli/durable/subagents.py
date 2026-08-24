@@ -1,15 +1,10 @@
-"""YAACLI SQLite adapters for process-local portable SDK subagents."""
+"""YAACLI runtime adapters for file-backed process-local SDK subagents."""
 
 from __future__ import annotations
 
-import json
-import sqlite3
-import threading
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from pydantic import TypeAdapter
@@ -25,7 +20,6 @@ from pydantic_ai.messages import (
     ModelRequest,
     UserPromptPart,
 )
-from pydantic_core import to_jsonable_python
 from pydantic_graph import End
 from ya_agent_sdk.context import (
     AgentContext,
@@ -40,27 +34,21 @@ from ya_agent_sdk.inputs import (
 from ya_agent_sdk.subagents import (
     AsyncioSubagentExecutionHost,
     InProcessSubagentDriver,
-    SubagentExecutionIdConflict,
-    SubagentExecutionStore,
     SubagentPlanResolver,
 )
 from ya_agent_sdk.subagents.spec import (
     ResolvedSubagentPlan,
     SubagentDriverOutcome,
     SubagentExecutionRecord,
-    SubagentExecutionState,
-    SubagentInputState,
-    SubagentPlanDescriptor,
 )
 
 from yaacli.durable.bindings import runtime_bindings
+from yaacli.durable.file_subagents import FileSubagentExecutionStore
 from yaacli.durable.models import (
     InputPriority,
     InputRecord,
     InputState,
-    SessionStatus,
 )
-from yaacli.durable.sqlite_schema import SUBAGENT_SCHEMA, validate_exact_schema_subset
 from yaacli.durable.store import (
     InvalidTransitionError,
     TombstonedSessionError,
@@ -73,10 +61,10 @@ _USER_CONTENT = TypeAdapter(list[UserContent])
 
 
 @dataclass(frozen=True, slots=True)
-class SQLiteRetainedSubagentPlanProvider:
-    """Lazily restore an exact historical child plan from product storage."""
+class FileRetainedSubagentPlanProvider:
+    """Lazily restore an exact historical child plan from its execution file."""
 
-    store: SQLiteSubagentExecutionStore
+    store: FileSubagentExecutionStore
     resolver: SubagentPlanResolver
 
     async def load_retained_plan(
@@ -87,650 +75,6 @@ class SQLiteRetainedSubagentPlanProvider:
         if descriptor is None:
             return None
         return self.resolver.restore(descriptor)
-
-
-class SQLiteSubagentExecutionStore(SubagentExecutionStore):
-    """Portable child records stored in the YAACLI product database."""
-
-    restart_durable = False
-
-    def __init__(self, database_path: Path) -> None:
-        self.database_path = database_path.expanduser().resolve()
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
-        self._active_descriptors: dict[str, SubagentPlanDescriptor] = {}
-        self._connection = sqlite3.connect(
-            self.database_path,
-            timeout=30,
-            isolation_level=None,
-            check_same_thread=False,
-        )
-        self._connection.row_factory = sqlite3.Row
-        try:
-            self._initialize_or_validate_schema()
-            self._connection.execute("PRAGMA journal_mode=WAL")
-            self._connection.execute("PRAGMA synchronous=FULL")
-            self._connection.execute("PRAGMA foreign_keys=ON")
-        except BaseException:
-            self._connection.close()
-            raise
-
-    def _initialize_or_validate_schema(self) -> None:
-        error_prefix = (
-            "Unsupported subagent execution schema; YAACLI 2.0 requires the exact "
-            "owner-scoped execution and durable child-inbox schema"
-        )
-        session_table = self._connection.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'sessions'"
-        ).fetchone()
-        if session_table is None:
-            raise RuntimeError(
-                f"{error_prefix}; missing shared durable product schema. "
-                "Initialize SQLiteSessionStore first; standalone child databases are not supported."
-            )
-        validate_exact_schema_subset(
-            self._connection,
-            SUBAGENT_SCHEMA,
-            error_prefix=error_prefix,
-        )
-
-    def recover_orphaned_executions(self) -> tuple[str, ...]:
-        """Mark process-owned child work lost at an explicit host startup boundary."""
-        rows = self._connection.execute("SELECT execution_id, record_json FROM subagent_executions").fetchall()
-        now = datetime.now(UTC)
-        recovered_ids: list[str] = []
-        for row in rows:
-            record = SubagentExecutionRecord.model_validate_json(row["record_json"])
-            if record.state not in {
-                SubagentExecutionState.pending,
-                SubagentExecutionState.running,
-                SubagentExecutionState.suspended,
-            }:
-                continue
-            recovered = record.model_copy(
-                update={
-                    "state": SubagentExecutionState.lost,
-                    "input_state": (
-                        SubagentInputState.applied
-                        if record.input_state is SubagentInputState.applied
-                        else SubagentInputState.rejected
-                    ),
-                    "error": "Subagent execution was interrupted by process restart.",
-                    "completed_at": now,
-                }
-            )
-            self._connection.execute(
-                """
-                UPDATE subagent_executions
-                SET record_json = ?, input_open = 0, updated_at = ?
-                WHERE execution_id = ?
-                """,
-                (recovered.model_dump_json(), now.isoformat(), recovered.execution_id),
-            )
-            recovered_ids.append(recovered.execution_id)
-            self._connection.execute(
-                """
-                UPDATE subagent_inputs
-                SET state = ?, rejection_reason = ?, updated_at = ?
-                WHERE execution_id = ? AND state IN (?, ?)
-                """,
-                (
-                    InputState.rejected.value,
-                    "Subagent execution was interrupted by process restart.",
-                    now.isoformat(),
-                    recovered.execution_id,
-                    InputState.accepted.value,
-                    InputState.enqueued.value,
-                ),
-            )
-        return tuple(recovered_ids)
-
-    async def close(self) -> None:
-        self.close_sync()
-
-    def close_sync(self) -> None:
-        """Close the shared-product synchronous SQLite adapter."""
-        with self._lock:
-            self._connection.close()
-
-    @staticmethod
-    def _ensure_owner_active(
-        connection: sqlite3.Connection,
-        owner_scope_id: str,
-    ) -> None:
-        row = connection.execute(
-            "SELECT status FROM sessions WHERE session_id = ?",
-            (owner_scope_id,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(owner_scope_id)
-        if SessionStatus(row["status"]) is not SessionStatus.active:
-            raise TombstonedSessionError(f"Owner session {owner_scope_id!r} is tombstoned")
-
-    @classmethod
-    def _required_writable_execution(
-        cls,
-        connection: sqlite3.Connection,
-        execution_id: str,
-    ) -> sqlite3.Row:
-        row = connection.execute(
-            """
-            SELECT e.*, s.status AS owner_status
-            FROM subagent_executions AS e
-            JOIN sessions AS s ON s.session_id = e.owner_scope_id
-            WHERE e.execution_id = ?
-            """,
-            (execution_id,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(execution_id)
-        if SessionStatus(row["owner_status"]) is not SessionStatus.active or bool(row["cancel_requested"]):
-            raise TombstonedSessionError(
-                f"Owner session {row['owner_scope_id']!r} no longer accepts child execution writes"
-            )
-        return row
-
-    def require_executable(self, execution_id: str) -> SubagentExecutionRecord:
-        """Fence model execution after owner tombstone or cancellation intent."""
-        with self._lock:
-            row = self._required_writable_execution(
-                self._connection,
-                execution_id,
-            )
-        return SubagentExecutionRecord.model_validate_json(row["record_json"])
-
-    @staticmethod
-    def _put_descriptor_row(
-        connection: sqlite3.Connection,
-        descriptor: SubagentPlanDescriptor,
-        *,
-        now: str,
-    ) -> None:
-        payload = descriptor.model_dump_json()
-        row = connection.execute(
-            "SELECT fingerprint, descriptor_json FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-            (descriptor.descriptor_id,),
-        ).fetchone()
-        if row is None:
-            connection.execute(
-                "INSERT INTO subagent_plan_descriptors "
-                "(descriptor_id, fingerprint, descriptor_json, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (descriptor.descriptor_id, descriptor.fingerprint, payload, now),
-            )
-        elif row["fingerprint"] != descriptor.fingerprint or json.loads(row["descriptor_json"]) != json.loads(payload):
-            raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
-
-    def put_descriptor(self, plan: ResolvedSubagentPlan) -> None:
-        descriptor = plan.to_descriptor()
-        now = datetime.now(UTC).isoformat()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                self._put_descriptor_row(self._connection, descriptor, now=now)
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-            self._active_descriptors[descriptor.descriptor_id] = descriptor
-
-    def get_descriptor(self, descriptor_id: str) -> SubagentPlanDescriptor | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT descriptor_json FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-                (descriptor_id,),
-            ).fetchone()
-        return SubagentPlanDescriptor.model_validate_json(row["descriptor_json"]) if row is not None else None
-
-    def list_referenced_descriptors(self) -> tuple[SubagentPlanDescriptor, ...]:
-        """Return every exact plan still referenced by an execution record."""
-        with self._lock:
-            record_rows = self._connection.execute(
-                "SELECT record_json FROM subagent_executions ORDER BY created_at, execution_id"
-            ).fetchall()
-            descriptor_ids = sorted({
-                SubagentExecutionRecord.model_validate_json(row["record_json"]).descriptor_id for row in record_rows
-            })
-            descriptors: list[SubagentPlanDescriptor] = []
-            for descriptor_id in descriptor_ids:
-                row = self._connection.execute(
-                    "SELECT descriptor_json FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-                    (descriptor_id,),
-                ).fetchone()
-                if row is None:
-                    raise RuntimeError(f"Subagent execution references missing descriptor {descriptor_id!r}")
-                descriptors.append(SubagentPlanDescriptor.model_validate_json(row["descriptor_json"]))
-        return tuple(descriptors)
-
-    async def create(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:
-        now = datetime.now(UTC).isoformat()
-        payload = record.model_dump_json()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                self._ensure_owner_active(
-                    self._connection,
-                    record.owner_scope_id,
-                )
-                existing = self._connection.execute(
-                    "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ? AND idempotency_key = ?",
-                    (record.owner_scope_id, record.idempotency_key),
-                ).fetchone()
-                if existing is not None:
-                    self._connection.execute("COMMIT")
-                    return SubagentExecutionRecord.model_validate_json(existing["record_json"])
-                descriptor = self._active_descriptors.get(record.descriptor_id)
-                if descriptor is not None:
-                    self._put_descriptor_row(self._connection, descriptor, now=now)
-                else:
-                    descriptor_row = self._connection.execute(
-                        "SELECT 1 FROM subagent_plan_descriptors WHERE descriptor_id = ?",
-                        (record.descriptor_id,),
-                    ).fetchone()
-                    if descriptor_row is None:
-                        raise RuntimeError(f"Subagent execution references missing descriptor {record.descriptor_id!r}")
-                self._connection.execute(
-                    "INSERT INTO subagent_executions "
-                    "(execution_id, owner_scope_id, idempotency_key, record_json, input_open, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        record.execution_id,
-                        record.owner_scope_id,
-                        record.idempotency_key,
-                        payload,
-                        int(
-                            record.state
-                            in {
-                                SubagentExecutionState.pending,
-                                SubagentExecutionState.running,
-                                SubagentExecutionState.suspended,
-                            }
-                        ),
-                        now,
-                        now,
-                    ),
-                )
-                self._connection.execute("COMMIT")
-            except sqlite3.IntegrityError as exc:
-                self._connection.execute("ROLLBACK")
-                collision = self._connection.execute(
-                    "SELECT 1 FROM subagent_executions WHERE execution_id = ?",
-                    (record.execution_id,),
-                ).fetchone()
-                if collision is not None:
-                    raise SubagentExecutionIdConflict(
-                        f"Subagent execution {record.execution_id!r} already exists"
-                    ) from exc
-                raise
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-        return record.model_copy(deep=True)
-
-    async def save(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:
-        now = datetime.now(UTC).isoformat()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                row = self._connection.execute(
-                    """
-                    SELECT e.*, s.status AS owner_status
-                    FROM subagent_executions AS e
-                    JOIN sessions AS s ON s.session_id = e.owner_scope_id
-                    WHERE e.execution_id = ? AND e.owner_scope_id = ?
-                    """,
-                    (record.execution_id, record.owner_scope_id),
-                ).fetchone()
-                if row is None:
-                    raise KeyError(record.execution_id)
-                current = SubagentExecutionRecord.model_validate_json(row["record_json"])
-                fenced = SessionStatus(row["owner_status"]) is not SessionStatus.active or bool(row["cancel_requested"])
-                if current.terminal and (record.state is not current.state or fenced):
-                    self._connection.execute("COMMIT")
-                    return current.model_copy(deep=True)
-                if fenced and record.state is not SubagentExecutionState.cancelled:
-                    raise TombstonedSessionError(f"Owner session {record.owner_scope_id!r} fenced a late child commit")
-                input_open = int(
-                    not fenced
-                    and record.state
-                    in {
-                        SubagentExecutionState.pending,
-                        SubagentExecutionState.running,
-                        SubagentExecutionState.suspended,
-                    }
-                )
-                self._connection.execute(
-                    "UPDATE subagent_executions "
-                    "SET record_json = ?, input_open = ?, updated_at = ? "
-                    "WHERE execution_id = ? AND owner_scope_id = ?",
-                    (
-                        record.model_dump_json(),
-                        input_open,
-                        now,
-                        record.execution_id,
-                        record.owner_scope_id,
-                    ),
-                )
-                if record.terminal:
-                    rejection_reason = (
-                        row["cancellation_reason"]
-                        if fenced and row["cancellation_reason"] is not None
-                        else f"child terminated as {record.state.value} before input application"
-                    )
-                    self._connection.execute(
-                        "UPDATE subagent_inputs SET state = ?, rejection_reason = ?, updated_at = ? "
-                        "WHERE execution_id = ? AND state IN (?, ?)",
-                        (
-                            InputState.rejected.value,
-                            rejection_reason,
-                            now,
-                            record.execution_id,
-                            InputState.accepted.value,
-                            InputState.enqueued.value,
-                        ),
-                    )
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-        return record.model_copy(deep=True)
-
-    async def get(
-        self,
-        execution_id: str,
-        *,
-        owner_scope_id: str | None = None,
-    ) -> SubagentExecutionRecord | None:
-        query = "SELECT record_json FROM subagent_executions WHERE execution_id = ?"
-        params: tuple[str, ...] = (execution_id,)
-        if owner_scope_id is not None:
-            query += " AND owner_scope_id = ?"
-            params = (execution_id, owner_scope_id)
-        with self._lock:
-            row = self._connection.execute(query, params).fetchone()
-        return self._record(row)
-
-    async def get_by_idempotency_key(
-        self,
-        idempotency_key: str,
-        *,
-        owner_scope_id: str,
-    ) -> SubagentExecutionRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ? AND idempotency_key = ?",
-                (owner_scope_id, idempotency_key),
-            ).fetchone()
-        return self._record(row)
-
-    async def list(
-        self,
-        *,
-        owner_scope_id: str | None = None,
-    ) -> tuple[SubagentExecutionRecord, ...]:
-        query = "SELECT record_json FROM subagent_executions"
-        params: tuple[str, ...] = ()
-        if owner_scope_id is not None:
-            query += " WHERE owner_scope_id = ?"
-            params = (owner_scope_id,)
-        query += " ORDER BY created_at, execution_id"
-        with self._lock:
-            rows = self._connection.execute(query, params).fetchall()
-        return tuple(SubagentExecutionRecord.model_validate_json(row["record_json"]) for row in rows)
-
-    async def list_page(
-        self,
-        *,
-        owner_scope_id: str,
-        offset: int,
-        limit: int,
-    ) -> tuple[tuple[SubagentExecutionRecord, ...], int]:
-        with self._lock:
-            total = cast(
-                int,
-                self._connection.execute(
-                    "SELECT COUNT(*) FROM subagent_executions WHERE owner_scope_id = ?",
-                    (owner_scope_id,),
-                ).fetchone()[0],
-            )
-            rows = self._connection.execute(
-                "SELECT record_json FROM subagent_executions WHERE owner_scope_id = ? "
-                "ORDER BY created_at, execution_id LIMIT ? OFFSET ?",
-                (owner_scope_id, limit, offset),
-            ).fetchall()
-        return tuple(SubagentExecutionRecord.model_validate_json(row["record_json"]) for row in rows), total
-
-    async def list_nonterminal_ids(
-        self,
-        *,
-        owner_scope_id: str,
-    ) -> tuple[str, ...]:
-        with self._lock:
-            rows = self._connection.execute(
-                "SELECT execution_id FROM subagent_executions "
-                "WHERE owner_scope_id = ? AND input_open = 1 "
-                "ORDER BY created_at, execution_id",
-                (owner_scope_id,),
-            ).fetchall()
-        return tuple(str(row["execution_id"]) for row in rows)
-
-    def accept_input(
-        self,
-        execution_id: str,
-        content: Sequence[Any],
-        *,
-        idempotency_key: str,
-        origin: InputOrigin,
-    ) -> InputRecord:
-        normalized = cast(list[Any], to_jsonable_python(list(content)))
-        now = datetime.now(UTC).isoformat()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                execution_row = self._required_writable_execution(
-                    self._connection,
-                    execution_id,
-                )
-                existing = self._connection.execute(
-                    "SELECT * FROM subagent_inputs WHERE execution_id = ? AND idempotency_key = ?",
-                    (execution_id, idempotency_key),
-                ).fetchone()
-                if existing is not None:
-                    record = self._input(existing)
-                    if record.content != normalized or record.origin != origin.value:
-                        raise ValueError("Child input idempotency key was reused with different content")
-                    self._connection.execute("COMMIT")
-                    return record
-                execution = SubagentExecutionRecord.model_validate_json(execution_row["record_json"])
-                if not bool(execution_row["input_open"]) or execution.state not in {
-                    SubagentExecutionState.pending,
-                    SubagentExecutionState.running,
-                    SubagentExecutionState.suspended,
-                }:
-                    raise InvalidTransitionError(f"Subagent execution {execution_id!r} is not accepting input")
-                order_index = cast(
-                    int,
-                    self._connection.execute(
-                        "SELECT COALESCE(MAX(order_index), -1) + 1 AS value "
-                        "FROM subagent_inputs WHERE execution_id = ?",
-                        (execution_id,),
-                    ).fetchone()["value"],
-                )
-                input_id = str(uuid4())
-                self._connection.execute(
-                    "INSERT INTO subagent_inputs "
-                    "(input_id, execution_id, order_index, idempotency_key, origin, priority, "
-                    "content_json, state, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        input_id,
-                        execution_id,
-                        order_index,
-                        idempotency_key,
-                        origin.value,
-                        InputPriority.asap.value,
-                        json.dumps(normalized, ensure_ascii=False, sort_keys=True),
-                        InputState.accepted.value,
-                        now,
-                        now,
-                    ),
-                )
-                row = self._connection.execute(
-                    "SELECT * FROM subagent_inputs WHERE input_id = ?",
-                    (input_id,),
-                ).fetchone()
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-        if row is None:  # pragma: no cover - SQLite insert invariant
-            raise RuntimeError("Accepted child input disappeared")
-        return self._input(row)
-
-    def list_inputs(
-        self,
-        execution_id: str,
-        *,
-        states: Sequence[InputState] | None = None,
-    ) -> tuple[InputRecord, ...]:
-        query = "SELECT * FROM subagent_inputs WHERE execution_id = ?"
-        params: list[Any] = [execution_id]
-        if states is not None:
-            if not states:
-                return ()
-            query += f" AND state IN ({','.join('?' for _ in states)})"
-            params.extend(state.value for state in states)
-        query += " ORDER BY CASE priority WHEN 'asap' THEN 0 ELSE 1 END, order_index"
-        with self._lock:
-            rows = self._connection.execute(query, params).fetchall()
-        return tuple(self._input(row) for row in rows)
-
-    def transition_input(
-        self,
-        input_id: str,
-        expected: InputState,
-        target: InputState,
-        *,
-        native_enqueue_id: str | None = None,
-        rejection_reason: str | None = None,
-    ) -> InputRecord:
-        now = datetime.now(UTC).isoformat()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                row = self._connection.execute(
-                    "SELECT * FROM subagent_inputs WHERE input_id = ?",
-                    (input_id,),
-                ).fetchone()
-                if row is None:
-                    raise KeyError(input_id)
-                self._required_writable_execution(
-                    self._connection,
-                    row["execution_id"],
-                )
-                record = self._input(row)
-                if record.state is target:
-                    if (
-                        target is InputState.enqueued
-                        and native_enqueue_id is not None
-                        and record.native_enqueue_id != native_enqueue_id
-                    ):
-                        self._connection.execute(
-                            "UPDATE subagent_inputs SET native_enqueue_id = ?, updated_at = ? WHERE input_id = ?",
-                            (native_enqueue_id, now, input_id),
-                        )
-                        refreshed = self._connection.execute(
-                            "SELECT * FROM subagent_inputs WHERE input_id = ?",
-                            (input_id,),
-                        ).fetchone()
-                        self._connection.execute("COMMIT")
-                        if refreshed is None:  # pragma: no cover - SQLite update invariant
-                            raise RuntimeError("Updated child input disappeared")
-                        return self._input(refreshed)
-                    self._connection.execute("COMMIT")
-                    return record
-                allowed = {
-                    InputState.accepted: {InputState.enqueued, InputState.applied, InputState.rejected},
-                    InputState.enqueued: {InputState.applied, InputState.rejected},
-                    InputState.applied: set(),
-                    InputState.rejected: set(),
-                }
-                if record.state is not expected or target not in allowed[record.state]:
-                    raise InvalidTransitionError(
-                        f"Cannot transition child input from {record.state.value} to {target.value}"
-                    )
-                if target is InputState.rejected and not rejection_reason:
-                    raise InvalidTransitionError("Rejected child inputs require a reason")
-                self._connection.execute(
-                    "UPDATE subagent_inputs SET state = ?, native_enqueue_id = COALESCE(?, native_enqueue_id), "
-                    "rejection_reason = COALESCE(?, rejection_reason), updated_at = ? WHERE input_id = ?",
-                    (target.value, native_enqueue_id, rejection_reason, now, input_id),
-                )
-                updated = self._connection.execute(
-                    "SELECT * FROM subagent_inputs WHERE input_id = ?",
-                    (input_id,),
-                ).fetchone()
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-        if updated is None:  # pragma: no cover - SQLite update invariant
-            raise RuntimeError("Transitioned child input disappeared")
-        return self._input(updated)
-
-    def close_and_list_inputs(self, execution_id: str) -> tuple[InputRecord, ...]:
-        now = datetime.now(UTC).isoformat()
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                row = self._required_writable_execution(
-                    self._connection,
-                    execution_id,
-                )
-                execution = SubagentExecutionRecord.model_validate_json(row["record_json"])
-                if execution.terminal or execution.state is SubagentExecutionState.suspended:
-                    self._connection.execute("COMMIT")
-                    return ()
-                self._connection.execute(
-                    "UPDATE subagent_executions SET input_open = 0, updated_at = ? WHERE execution_id = ?",
-                    (now, execution_id),
-                )
-                rows = self._connection.execute(
-                    "SELECT * FROM subagent_inputs WHERE execution_id = ? AND state IN (?, ?) "
-                    "ORDER BY CASE priority WHEN 'asap' THEN 0 ELSE 1 END, order_index",
-                    (execution_id, InputState.accepted.value, InputState.enqueued.value),
-                ).fetchall()
-                if rows:
-                    self._connection.execute(
-                        "UPDATE subagent_executions SET input_open = 1 WHERE execution_id = ?",
-                        (execution_id,),
-                    )
-                self._connection.execute("COMMIT")
-            except BaseException:
-                self._connection.execute("ROLLBACK")
-                raise
-        return tuple(self._input(item) for item in rows)
-
-    @staticmethod
-    def _record(row: sqlite3.Row | None) -> SubagentExecutionRecord | None:
-        return SubagentExecutionRecord.model_validate_json(row["record_json"]) if row is not None else None
-
-    @staticmethod
-    def _input(row: sqlite3.Row) -> InputRecord:
-        return InputRecord(
-            input_id=row["input_id"],
-            logical_run_id=row["execution_id"],
-            order_index=row["order_index"],
-            idempotency_key=row["idempotency_key"],
-            origin=row["origin"],
-            priority=InputPriority(row["priority"]),
-            content=json.loads(row["content_json"]),
-            state=InputState(row["state"]),
-            native_enqueue_id=row["native_enqueue_id"],
-            rejection_reason=row["rejection_reason"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-            updated_at=datetime.fromisoformat(row["updated_at"]),
-        )
 
 
 class DurableSubagentCompletionDelivery:
@@ -812,7 +156,7 @@ class DurableSubagentCompletionDelivery:
 class DurableSubagentInboxCapability(AbstractCapability[TUIContext]):
     """Apply persisted process-local child steering at native graph boundaries."""
 
-    store: SQLiteSubagentExecutionStore
+    store: FileSubagentExecutionStore
     id: str | None = "yaacli_durable_subagent_inbox_v2"
 
     _safe_at_runtime: ClassVar[bool] = False
@@ -946,7 +290,7 @@ class LocalSubagentDriver:
     def __init__(
         self,
         *,
-        store: SQLiteSubagentExecutionStore,
+        store: FileSubagentExecutionStore,
         request_limit: int,
         default_model_cfg: ModelConfig,
         custom_capability_types: Sequence[type[Any]] = (),

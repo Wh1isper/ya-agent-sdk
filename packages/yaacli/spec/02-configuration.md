@@ -314,10 +314,13 @@ now-quiescent sessions, then tombstones newly selected sessions; this two-pass b
 preserves the write fence and terminal-state check before physical deletion.
 
 The `sessions-v2.sqlite3` name denotes the YAACLI 2 product-store generation, not the
-internal schema marker. YAACLI does not migrate or open the former default
-`sessions.sqlite3`; that file remains untouched. An explicit `database_path` or
-`YAACLI_DATABASE_PATH` is authoritative and must already be empty or match the exact
-current schema.
+internal schema marker. SQLite stores metadata and small coordination records; revision,
+checkpoint, and child state files are placed in per-session directories next to the
+database. The known schema-v5 YAACLI database is intentionally reset at the same path
+for this cutover, with no payload migration or v3 database. YAACLI does not migrate or
+open the former default `sessions.sqlite3`; that file remains untouched. An explicit
+`database_path` or `YAACLI_DATABASE_PATH` is authoritative. Unknown incompatible or
+unmarked schemas remain strict errors.
 
 Every successful, failed, or cancelled logical run commits a terminal durable revision.
 The removed file-snapshot save and pruning switches do not control this invariant.

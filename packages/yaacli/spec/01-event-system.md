@@ -9,7 +9,8 @@ ownership:
 2. **SDK sideband events** describe SDK-owned lifecycle, usage, compact, handoff, and
    foreground subagent activity.
 3. **Durable product projections** describe session, background-subagent, shell, and
-   HITL state whose authority lives in SQLite rather than in an in-memory event queue.
+   HITL state whose authority lives in the hybrid session store rather than in an
+   in-memory event queue.
 
 Events are notifications and display inputs. They are not durable commands, canonical
 session history, or a hidden input transport.
@@ -107,7 +108,7 @@ therefore cannot be an SDK event queue.
 
 ```mermaid
 flowchart TD
-    Child[Portable background child] --> ChildStore[(subagent_executions)]
+    Child[Portable background child] --> ChildStore[Per-child state.json]
     Child --> Delivery[Durable completion delivery]
     Delivery --> Inbox[(run_inputs)]
     ChildStore --> ChildProjection[TUI readiness projection]
@@ -122,8 +123,8 @@ flowchart TD
 
 ### Background subagent completion
 
-YAACLI polls durable `subagent_executions` records only to show readiness for the active
-session. Projection is idempotent by `execution_id`. It neither consumes the result nor
+YAACLI scans the active session's durable `subagents/*/state.json` files only to show
+readiness. Projection is idempotent by `execution_id`. It neither consumes the result nor
 wakes the model. `DurableSubagentCompletionDelivery` writes the canonical completion
 message to a compatible active session run with an idempotency key and
 `wake_execution=False`.
@@ -164,7 +165,8 @@ registered callbacks. It does not persist, reorder, or retry events.
 - No MessageBus, bus cursor, or `MessageReceivedEvent` exists in the 2.0 runtime.
 - User text, steering, shell readiness, and child completion enter model execution only
   through the logical-run input ledger and native Pydantic AI enqueue lifecycle.
-- Durable state is reconstructed from SQLite records, not from sideband event replay.
+- Durable state is reconstructed from SQLite metadata and typed state files, not from
+  sideband event replay.
 - Display replay is bounded and non-authoritative.
 - Event payloads shown in the terminal are bounded; full durable records remain behind
   their owning service APIs.
@@ -181,5 +183,5 @@ registered callbacks. It does not persist, reorder, or retry events.
 | TUI stream projection | `yaacli/app/tui.py` |
 | Dispatch helper | `yaacli/streaming/event_handler.py` |
 | Durable session events and input | `yaacli/durable/` |
-| Durable child execution records | `yaacli/durable/subagents.py` |
+| Durable child execution records | `yaacli/durable/file_subagents.py` |
 | Environment shell readiness | `yaacli/shell_monitor.py` |

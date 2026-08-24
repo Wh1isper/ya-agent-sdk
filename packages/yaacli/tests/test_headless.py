@@ -24,7 +24,7 @@ from yaacli.config import ConfigManager
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.models import ChildPlanManifest
 from yaacli.durable.sqlite import SQLiteSessionStore
-from yaacli.durable.subagents import SQLiteSubagentExecutionStore
+from yaacli.durable.subagents import FileSubagentExecutionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str
 from yaacli.headless import HeadlessEventSink, _run_headless_prompt
@@ -64,7 +64,7 @@ async def _seed_terminal_child_descriptor(manager: ConfigManager, tmp_path: Path
     database_path = manager.get_session_database_path()
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="legacy-owner")
-    child_store = SQLiteSubagentExecutionStore(database_path)
+    child_store = FileSubagentExecutionStore(database_path)
     child_store.put_descriptor(plan)
     await child_store.create(
         SubagentExecutionRecord(
@@ -185,7 +185,7 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
     assert retained_descriptor_id not in {descriptor.descriptor_id for descriptor in child_manifest.descriptors}
     assert calls[0]["subagent_deferred_resolver"] is not None
 
-    retained_store = SQLiteSubagentExecutionStore(manager.get_session_database_path())
+    retained_store = FileSubagentExecutionStore(manager.get_session_database_path())
     try:
         assert retained_store.get_descriptor(retained_descriptor_id) is not None
     finally:
