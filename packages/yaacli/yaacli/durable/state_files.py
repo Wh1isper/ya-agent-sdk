@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
+import errno
 import hashlib
 import json
 import os
@@ -56,12 +56,16 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
 
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
         depths[path] = 1
+        locked = False
         try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            if not _lock_descriptor(descriptor, blocking=True):  # pragma: no cover - blocking invariant
+                raise RuntimeError(f"Failed to acquire durable state lock: {path}")
+            locked = True
             yield
         finally:
             depths.pop(path, None)
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            if locked:
+                _unlock_descriptor(descriptor)
             os.close(descriptor)
 
 
@@ -128,11 +132,9 @@ class SessionStateFiles:
             return False
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
+            if not _lock_descriptor(descriptor, blocking=False):
                 return True
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            _unlock_descriptor(descriptor)
         finally:
             os.close(descriptor)
         lock_path.unlink(missing_ok=True)
@@ -143,7 +145,12 @@ class SessionStateFiles:
         with _LOCKS_GUARD:
             if lock_path not in _PROCESS_OWNER_FDS:
                 descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    if not _lock_descriptor(descriptor, blocking=False):
+                        raise RuntimeError(f"Failed to acquire process owner lock: {lock_path}")
+                except BaseException:
+                    os.close(descriptor)
+                    raise
                 _PROCESS_OWNER_FDS[lock_path] = descriptor
         return _PROCESS_OWNER_TOKEN
 
@@ -157,8 +164,10 @@ class SessionStateFiles:
     @contextmanager
     def session_lock(self, session_id: str) -> Iterator[None]:
         """Serialize one session's SQLite lifecycle and file-state mutations."""
-        session_dir = self.session_dir(session_id, create=True)
-        lock_path = session_dir / ".lock"
+        component = _safe_component(session_id, label="session ID")
+        self.session_dir(component, create=True)
+        lock_digest = hashlib.sha256(component.encode()).hexdigest()[:32]
+        lock_path = self.root / f".session-lock-{lock_digest}.lock"
         if lock_path.is_symlink():
             raise RuntimeError(f"Session lock path must not be a symlink: {lock_path}")
         with exclusive_file_lock(lock_path):
@@ -487,6 +496,46 @@ class SessionStateFiles:
                 raise RuntimeError(f"Durable state path must not contain symlinks: {current}")
 
 
+def _lock_descriptor(descriptor: int, *, blocking: bool) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+        try:
+            msvcrt.locking(descriptor, mode, 1)
+        except OSError as exc:
+            if not blocking and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                return False
+            raise
+        return True
+
+    import fcntl
+
+    mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        fcntl.flock(descriptor, mode)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
 def _safe_component(value: str, *, label: str) -> str:
     if not value or value in {".", ".."} or Path(value).name != value or "/" in value or "\\" in value:
         raise ValueError(f"Invalid {label}: {value!r}")
@@ -494,6 +543,8 @@ def _safe_component(value: str, *, label: str) -> str:
 
 
 def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
