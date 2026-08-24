@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -518,7 +519,7 @@ def test_offline_import_publishes_revision_with_model_metadata(tmp_path: Path) -
 def test_schema_v5_store_is_destructively_recreated_at_same_path(tmp_path: Path) -> None:
     database_path = tmp_path / "sessions-v2.sqlite3"
     legacy_schema = (Path(__file__).parents[1] / "fixtures" / "session_schema_v5.sql").read_text(encoding="utf-8")
-    with sqlite3.connect(database_path) as connection:
+    with closing(sqlite3.connect(database_path)) as connection:
         connection.executescript(legacy_schema)
         connection.execute(
             """

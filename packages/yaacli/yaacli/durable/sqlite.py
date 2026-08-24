@@ -9,7 +9,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1922,7 +1922,7 @@ def _reset_disposable_legacy_database(path: Path) -> None:
     if not path.exists():
         return
     try:
-        with sqlite3.connect(path) as connection:
+        with closing(sqlite3.connect(path)) as connection:
             marker_table = connection.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_metadata'"
             ).fetchone()
