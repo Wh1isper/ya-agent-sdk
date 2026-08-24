@@ -208,6 +208,109 @@ session_dir = "{session_dir}"
         assert any("[Goal] Cancelled at iteration 2" in line for line in app._output_lines)
 
 
+async def test_tui_cancelled_run_replays_observed_incomplete_tool_call(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.toml").write_text(
+        """
+[general]
+model = "test"
+
+[session]
+auto_restore = false
+session_dir = "{session_dir}"
+""".format(session_dir=(tmp_path / "sessions").as_posix()),
+        encoding="utf-8",
+    )
+    manager = ConfigManager(config_dir=config_dir)
+    config = manager.load()
+    tool_started = asyncio.Event()
+    toolset = FunctionToolset[TUIContext](id="blocking-tool")
+
+    async def blocking_tool(value: str) -> str:
+        tool_started.set()
+        await asyncio.Event().wait()
+        return value
+
+    toolset.add_tool(Tool(blocking_tool))
+
+    async def stream_response(
+        _messages: list[ModelMessage],
+        _info: Any,
+    ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+        yield {
+            0: DeltaToolCall(
+                name="blocking_tool",
+                json_args='{"value":"unfinished"}',
+                tool_call_id="unfinished-tool-call",
+            )
+        }
+
+    def minimal_runtime_factory(*args: Any, **kwargs: Any):
+        del args
+        binding_ref = kwargs["durable_binding_ref"]
+        return create_agent(
+            FunctionModel(stream_function=stream_response),
+            capabilities=[
+                NativeToolsetCapability(toolset, id="blocking-tool"),
+                DurableInboxPumpCapability(),
+            ],
+            context_type=TUIContext,
+            context_kwargs={"durable_binding_ref": binding_ref},
+            env=TUIEnvironment,
+            env_kwargs={"allowed_paths": [tmp_path], "default_path": tmp_path},
+            agent_name="yaacli_main_v2",
+        )
+
+    monkeypatch.setattr("yaacli.app.tui.create_tui_runtime", minimal_runtime_factory)
+    app = TUIApp(config, manager, working_dir=tmp_path)
+
+    async with app:
+        assert await app._restore_startup_session() is False
+        assert app._launch_agent("start one blocking tool") is True
+        task = app._agent_task
+        assert task is not None
+        await asyncio.wait_for(tool_started.wait(), timeout=5)
+        logical_run_id = app._active_logical_run_id
+        assert logical_run_id is not None
+        assert any("Calling:" in line and "blocking_tool" in line for line in app._output_lines)
+
+        app._cancel_foreground()
+        await asyncio.wait_for(task, timeout=5)
+
+        assert app._durable_store is not None
+        revision = app._durable_store.get_revision_for_run(logical_run_id)
+        assert revision is not None
+        assert revision.terminal == {
+            "status": "cancelled",
+            "reason": "user_interrupted",
+        }
+        observed_tool_events = [
+            event for event in revision.display_projection if event.get("toolCallName") == "blocking_tool"
+        ]
+        assert len(observed_tool_events) == 1
+        assert observed_tool_events[0]["type"] == "TOOL_CALL_CHUNK"
+        observed_tool_call_id = observed_tool_events[0]["toolCallId"]
+        assert not any(
+            event.get("type") == "TOOL_CALL_RESULT" and event.get("toolCallId") == observed_tool_call_id
+            for event in revision.display_projection
+        )
+        assert any("Calling:" in line and "blocking_tool" in line for line in app._output_lines)
+
+        app._restore_output_from_display_events(revision.display_projection)
+
+        assert any("Calling:" in line and "blocking_tool" in line for line in app._output_lines)
+        session_id = app.session_id
+
+    reattached_app = TUIApp(config, manager, working_dir=tmp_path)
+    async with reattached_app:
+        assert await reattached_app._load_session(session_id) is True
+        assert any("Calling:" in line and "blocking_tool" in line for line in reattached_app._output_lines)
+
+
 async def test_tui_unexpected_worker_cancellation_projects_interrupted_revision(
     tmp_path: Path,
     monkeypatch: Any,

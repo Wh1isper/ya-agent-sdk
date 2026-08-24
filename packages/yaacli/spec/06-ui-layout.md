@@ -48,8 +48,10 @@ The transcript is stored as bounded render blocks and exposed through a virtual 
 - A terminal revision never rebuilds the complete live transcript from its bounded,
   lossy replay projection. Successful runs keep their live segment; failed, cancelled,
   or interrupted runs replace only the active segment with the canonical terminal
-  projection. Controlled exits preserve safe partial model text and completed tool
-  calls, exclude incomplete tool calls, and leave unrelated scrollback unchanged.
+  projection. Controlled exits preserve safe partial model text and observed tool-call
+  display records, including an invocation interrupted before its result. Canonical model
+  history remains governed separately by SDK recoverable-message rules, and unrelated
+  scrollback remains unchanged.
 - Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
 
 ## Task Pane
