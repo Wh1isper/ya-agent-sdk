@@ -111,7 +111,7 @@ def test_tui_display_tool_result_uses_agui_timestamps_for_duration() -> None:
     assert abs(app._event_renderer.tracker.tool_calls["tool-1"].duration() - 1.5) < 0.01
 
 
-def test_terminal_recovery_projection_drops_only_incomplete_tool_calls() -> None:
+def test_terminal_recovery_projection_keeps_observed_incomplete_tool_calls() -> None:
     projected = _safe_recovery_display_projection([
         {"type": "RUN_STARTED", "runId": "run-1"},
         {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "partial text"},
@@ -139,8 +139,12 @@ def test_terminal_recovery_projection_drops_only_incomplete_tool_calls() -> None
 
     assert any(event.get("type") == "TEXT_MESSAGE_CHUNK" for event in projected)
     complete_tool_events = [event for event in projected if event.get("toolCallId") == "complete-tool"]
-    assert [event["type"] for event in complete_tool_events] == ["TOOL_CALL_CHUNK", "TOOL_CALL_RESULT"]
-    assert not any(event.get("toolCallId") == "incomplete-tool" for event in projected)
+    assert [event["type"] for event in complete_tool_events] == [
+        "TOOL_CALL_CHUNK",
+        "TOOL_CALL_RESULT",
+        "TOOL_CALL_CHUNK",
+    ]
+    assert any(event.get("toolCallId") == "incomplete-tool" for event in projected)
 
 
 def test_non_success_reconciliation_preserves_tools_and_unrelated_background_output() -> None:

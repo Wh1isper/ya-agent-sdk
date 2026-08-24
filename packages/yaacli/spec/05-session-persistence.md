@@ -197,8 +197,10 @@ YAACLI never replays an arbitrary in-flight graph segment after restart:
 - a later user continuation is a new logical run from the published head.
 
 Controlled failure and shutdown may publish the SDK's safe recoverable subset. The host
-preserves message history and resumable context as separate typed fields and excludes
-incomplete tool calls rather than replaying them.
+preserves message history and resumable context as separate typed fields. Canonical model
+history follows the SDK's recoverable-message rules and is never reconstructed from UI
+events. The non-authoritative display projection independently retains observed tool
+invocations so interrupted activity remains visible after reattach.
 
 ## Process-Local Subagents
 

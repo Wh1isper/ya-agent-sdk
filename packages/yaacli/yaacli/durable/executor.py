@@ -1011,37 +1011,8 @@ def _merge_recoverable_history(
 
 
 def _safe_recovery_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:
-    """Exclude tool calls without a result in the same displayed run segment."""
-    indexed_events: list[tuple[int, JsonValue]] = []
-    segment_index = 0
-    for event in events:
-        if isinstance(event, dict) and event.get("type") == "RUN_STARTED":
-            segment_index += 1
-        indexed_events.append((segment_index, event))
-
-    tool_result_keys = {
-        (event_segment, tool_call_id)
-        for event_segment, event in indexed_events
-        if isinstance(event, dict) and event.get("type") == "TOOL_CALL_RESULT"
-        if isinstance(
-            tool_call_id := event.get("toolCallId") or event.get("tool_call_id"),
-            str,
-        )
-    }
-    safe_events = [
-        event
-        for event_segment, event in indexed_events
-        if not (
-            isinstance(event, dict)
-            and event.get("type") == "TOOL_CALL_CHUNK"
-            and (
-                event_segment,
-                event.get("toolCallId") or event.get("tool_call_id"),
-            )
-            not in tool_result_keys
-        )
-    ]
-    return _bound_display_projection(safe_events)
+    """Retain observed UI facts while bounding the non-authoritative replay."""
+    return _bound_display_projection(events)
 
 
 def _bound_display_projection(events: Sequence[JsonValue]) -> list[JsonValue]:
