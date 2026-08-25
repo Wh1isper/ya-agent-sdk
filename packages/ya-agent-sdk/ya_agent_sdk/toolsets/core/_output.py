@@ -13,7 +13,7 @@ from ya_agent_sdk.context import AgentContext
 
 logger = get_logger(__name__)
 
-DEFAULT_OUTPUT_TRUNCATE_LIMIT = 20_000
+DEFAULT_OUTPUT_TRUNCATE_LIMIT = 12_000
 
 
 def dump_tool_output(value: Any) -> str:
@@ -54,7 +54,8 @@ async def write_tmp_output(
         if file_operator is None or context.tmp_dir is None:
             return None
         output_path = str(context.resolve_tmp_path(filename))
-        await file_operator.write_file(output_path, content)
+        payload = content.encode("utf-8") if isinstance(content, str) else content
+        await file_operator.write_file(output_path, payload)
         return output_path
     except Exception:
         logger.warning("Failed to write %s output to temp file", prefix, exc_info=True)
@@ -72,6 +73,20 @@ def truncate_text(text: str, max_chars: int, *, suffix: str) -> str:
     return text[: max_chars - len(suffix)] + suffix
 
 
+def _minimal_bounded_preview(result: dict[str, Any], limit: int) -> dict[str, Any]:
+    """Build a minimal bounded response when metadata cannot be preserved."""
+    fallback: dict[str, Any] = {"truncated": True}
+    output_path = result.get("output_file_path")
+    if isinstance(output_path, str):
+        candidate = {**fallback, "output_file_path": output_path}
+        if tool_output_size(candidate) <= limit:
+            fallback = candidate
+    candidate = {**fallback, "error": "Output metadata exceeded the inline limit."}
+    if tool_output_size(candidate) <= limit:
+        fallback = candidate
+    return fallback if tool_output_size(fallback) <= limit else {}
+
+
 def fit_text_fields_to_limit(
     result: dict[str, Any],
     *,
@@ -87,7 +102,7 @@ def fit_text_fields_to_limit(
     preview = dict(result)
     originals = {field: value for field in text_fields if isinstance((value := preview.get(field)), str)}
     if not originals:
-        return preview
+        return _minimal_bounded_preview(preview, limit)
 
     for field in originals:
         preview[field] = ""
@@ -113,7 +128,13 @@ def fit_text_fields_to_limit(
     marker = suffix.lstrip("\n") or "... (omitted)"
     for field in originals:
         preview[field] = marker
-    return preview
+    if tool_output_size(preview) <= limit:
+        return preview
+
+    # Non-target metadata can itself exceed the budget (for example, a malformed
+    # process handle or temp path). Fall back to a minimal response rather than
+    # allowing those fields to bypass the hard limit.
+    return _minimal_bounded_preview(preview, limit)
 
 
 def append_guidance(value: str | None, guidance: str) -> str:

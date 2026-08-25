@@ -17,6 +17,7 @@ from ya_agent_sdk.toolsets.core._output import (
     dump_tool_output,
     output_too_large_message,
     tool_output_size,
+    truncate_text,
     write_tmp_output,
 )
 from ya_agent_sdk.toolsets.core.base import BaseTool
@@ -69,6 +70,8 @@ def _build_list_search_preview(result: list[dict[str, Any]], output_path: str | 
         if tool_output_size(candidate) > DEFAULT_OUTPUT_TRUNCATE_LIMIT:
             break
         preview = candidate
+    if tool_output_size(preview) > DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+        return _minimal_search_preview(output_path, note)
     return preview
 
 
@@ -94,9 +97,14 @@ def _build_dict_search_base(
 
 
 def _minimal_search_preview(output_path: str | None, note: str) -> dict[str, Any]:
-    minimal: dict[str, Any] = {"truncated": True, "note": note}
+    minimal: dict[str, Any] = {
+        "truncated": True,
+        "note": truncate_text(note, 1000, suffix="... (truncated)"),
+    }
     if output_path is not None:
-        minimal["output_file_path"] = output_path
+        candidate = {**minimal, "output_file_path": output_path}
+        if tool_output_size(candidate) <= DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+            minimal = candidate
     return minimal
 
 
@@ -146,7 +154,10 @@ async def _guard_search_result(
     if tool_output_size(preview) > DEFAULT_OUTPUT_TRUNCATE_LIMIT and not list_keys:
         return _minimal_search_preview(output_path, note)
 
-    return _fill_dict_search_preview(result, preview, list_keys)
+    preview = _fill_dict_search_preview(result, preview, list_keys)
+    if tool_output_size(preview) > DEFAULT_OUTPUT_TRUNCATE_LIMIT:
+        return _minimal_search_preview(output_path, note)
+    return preview
 
 
 class SearchTool(BaseTool):

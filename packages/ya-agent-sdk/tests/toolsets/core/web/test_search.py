@@ -9,10 +9,12 @@ from inline_snapshot import snapshot
 from pydantic_ai import RunContext
 from ya_agent_sdk.context import AgentContext, ToolConfig
 from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core._output import DEFAULT_OUTPUT_TRUNCATE_LIMIT, tool_output_size
 from ya_agent_sdk.toolsets.core.web.search import (
     SearchImageTool,
     SearchStockImageTool,
     SearchTool,
+    _build_list_search_preview,
 )
 
 # =============================================================================
@@ -184,6 +186,55 @@ async def test_search_tool_spills_large_payload(tmp_path: Path, httpx2_mock) -> 
         assert "output_file_path" in result
         assert result["items_total"] == 6
         assert result["items_showing"] < 6
+        assert tool_output_size(result) <= DEFAULT_OUTPUT_TRUNCATE_LIMIT
+        assert Path(result["output_file_path"]).read_text()
+
+
+def test_search_list_preview_bounds_oversized_temp_path() -> None:
+    """A long environment-provided temp path must not bypass the list preview limit."""
+    output_path = "workspace-tmp/" + "x" * (DEFAULT_OUTPUT_TRUNCATE_LIMIT + 100)
+
+    result = _build_list_search_preview(
+        [{"title": "Result", "link": "https://example.com"}],
+        output_path,
+        "Output too large.",
+    )
+
+    assert result["truncated"] is True
+    assert tool_output_size(result) <= DEFAULT_OUTPUT_TRUNCATE_LIMIT
+    assert "output_file_path" not in result
+
+
+async def test_search_tool_bounds_oversized_top_level_metadata(tmp_path: Path, httpx2_mock) -> None:
+    """Known list fields must not let oversized sibling metadata bypass the hard limit."""
+    payload = {
+        "items": [{"title": "Result", "link": "https://example.com"}],
+        "oversized_metadata": "x" * (DEFAULT_OUTPUT_TRUNCATE_LIMIT * 2),
+    }
+    httpx2_mock.add_response(
+        url="https://www.googleapis.com/customsearch/v1?q=large+metadata&num=10&key=test-key&cx=test-cx",
+        json=payload,
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(
+                env=env,
+                tool_config=ToolConfig(google_search_api_key="test-key", google_search_cx="test-cx"),
+            )
+        )
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        result = await SearchTool().call(run_ctx, query="large metadata")
+
+        assert isinstance(result, dict)
+        assert result["truncated"] is True
+        assert tool_output_size(result) <= DEFAULT_OUTPUT_TRUNCATE_LIMIT
+        assert "output_file_path" in result
         assert Path(result["output_file_path"]).read_text()
 
 

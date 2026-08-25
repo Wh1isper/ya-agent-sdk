@@ -18,6 +18,7 @@ from ya_agent_sdk.environment.local import LocalFileOperator, LocalShell
 from ya_agent_sdk.environment.sandbox import DockerShell
 from ya_agent_sdk.events import BackgroundShellKilledEvent, BackgroundShellStartEvent
 from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
     append_guidance,
     dump_tool_output,
     fit_text_fields_to_limit,
@@ -37,7 +38,7 @@ from ya_agent_sdk.toolsets.core.shell.review import (
 
 logger = get_logger(__name__)
 
-OUTPUT_TRUNCATE_LIMIT = 20000
+OUTPUT_TRUNCATE_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 DEFAULT_TIMEOUT_SECONDS = 180
 SHELL_REVIEW_HISTORY_LIMIT = 10
 
@@ -208,7 +209,7 @@ async def _start_background_shell_command(
                 command=command,
             )
         )
-        return ShellResult(
+        result = ShellResult(
             stdout="",
             stderr="",
             return_code=-1,
@@ -220,12 +221,20 @@ async def _start_background_shell_command(
                 "shell_kill to terminate."
             ),
         )
+        return cast(
+            ShellResult,
+            await _guard_shell_result(ctx, cast(dict[str, Any], result), prefix="shell-start"),
+        )
     except Exception as e:
-        return ShellResult(
+        result = ShellResult(
             stdout="",
             stderr="",
             return_code=1,
             error=f"Failed to start background command: {e}",
+        )
+        return cast(
+            ShellResult,
+            await _guard_shell_result(ctx, cast(dict[str, Any], result), prefix="shell-start"),
         )
 
 
@@ -325,11 +334,15 @@ async def _execute_foreground_shell_command(
         return cast(ShellResult, await _guard_shell_result(ctx, cast(dict[str, Any], result), prefix="shell-exec"))
 
     except Exception as e:
-        return ShellResult(
+        result = ShellResult(
             stdout="",
             stderr="",
             return_code=1,
             error=f"Failed to execute command: {e}",
+        )
+        return cast(
+            ShellResult,
+            await _guard_shell_result(ctx, cast(dict[str, Any], result), prefix="shell-exec"),
         )
 
 
@@ -376,11 +389,15 @@ class ShellTool(BaseTool):
         ] = False,
     ) -> ShellResult:
         if not command or not command.strip():
-            return ShellResult(
+            result = ShellResult(
                 stdout="",
                 stderr="",
                 return_code=1,
                 error="Command cannot be empty.",
+            )
+            return cast(
+                ShellResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-exec"),
             )
 
         shell = cast(Shell, ctx.deps.shell)
@@ -395,7 +412,14 @@ class ShellTool(BaseTool):
             timeout_seconds=timeout_seconds,
         )
         if blocked_result is not None:
-            return blocked_result
+            return cast(
+                ShellResult,
+                await _guard_shell_result(
+                    ctx.deps,
+                    cast(dict[str, Any], blocked_result),
+                    prefix="shell-review",
+                ),
+            )
 
         # Background mode: start and return immediately
         if background:
@@ -473,14 +497,22 @@ class ShellWaitTool(BaseTool):
                 timeout=float(timeout_seconds),
             )
         except KeyError:
-            return ShellWaitResult(
+            result = ShellWaitResult(
                 process_id=process_id,
                 error=f"No background process with id: {process_id}",
             )
+            return cast(
+                ShellWaitResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-wait"),
+            )
         except Exception as e:
-            return ShellWaitResult(
+            result = ShellWaitResult(
                 process_id=process_id,
                 error=f"Failed to wait for process: {e}",
+            )
+            return cast(
+                ShellWaitResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-wait"),
             )
 
         result = ShellWaitResult(
@@ -562,16 +594,24 @@ class ShellKillTool(BaseTool):
                 await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-kill"),
             )
         except KeyError:
-            return ShellKillResult(
+            result = ShellKillResult(
                 process_id=process_id,
                 killed=False,
                 error=f"No background process with id: {process_id}",
             )
+            return cast(
+                ShellKillResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-kill"),
+            )
         except Exception as e:
-            return ShellKillResult(
+            result = ShellKillResult(
                 process_id=process_id,
                 killed=False,
                 error=f"Failed to kill process: {e}",
+            )
+            return cast(
+                ShellKillResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-kill"),
             )
 
 
@@ -589,12 +629,18 @@ class ShellStatusTool(BaseTool):
     async def call(
         self,
         ctx: RunContext[AgentContext],
-    ) -> str:
+    ) -> str | dict[str, Any]:
         shell = cast(Shell, ctx.deps.shell)
         summary = shell.background_status_summary_with_retained_results()
         if summary is None:
             return "No background processes."
-        return summary
+        if len(summary) <= OUTPUT_TRUNCATE_LIMIT:
+            return summary
+        return await _guard_shell_result(
+            ctx.deps,
+            {"stdout": summary},
+            prefix="shell-status",
+        )
 
 
 class ShellInputResult(TypedDict, total=False):
@@ -640,24 +686,36 @@ class ShellInputTool(BaseTool):
             data = text if text.endswith("\n") else text + "\n"
             await shell.write_stdin(process_id, data)
         except KeyError as e:
-            return ShellInputResult(
+            result = ShellInputResult(
                 process_id=process_id,
                 written=False,
                 error=str(e),
             )
+            return cast(
+                ShellInputResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-input"),
+            )
         except Exception as e:
-            return ShellInputResult(
+            result = ShellInputResult(
                 process_id=process_id,
                 written=False,
                 error=f"Failed to write to stdin: {e}",
+            )
+            return cast(
+                ShellInputResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-input"),
             )
 
         if close_stdin:
             await shell.close_stdin(process_id)
 
-        return ShellInputResult(
+        result = ShellInputResult(
             process_id=process_id,
             written=True,
+        )
+        return cast(
+            ShellInputResult,
+            await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-input"),
         )
 
 
@@ -701,22 +759,34 @@ class ShellSignalTool(BaseTool):
         try:
             await shell.send_signal(process_id, signal)
         except KeyError as e:
-            return ShellSignalResult(
+            result = ShellSignalResult(
                 process_id=process_id,
                 signal=signal,
                 sent=False,
                 error=str(e),
             )
+            return cast(
+                ShellSignalResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-signal"),
+            )
         except Exception as e:
-            return ShellSignalResult(
+            result = ShellSignalResult(
                 process_id=process_id,
                 signal=signal,
                 sent=False,
                 error=f"Failed to send signal {signal}: {e}",
             )
+            return cast(
+                ShellSignalResult,
+                await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-signal"),
+            )
 
-        return ShellSignalResult(
+        result = ShellSignalResult(
             process_id=process_id,
             signal=signal,
             sent=True,
+        )
+        return cast(
+            ShellSignalResult,
+            await _guard_shell_result(ctx.deps, cast(dict[str, Any], result), prefix="shell-signal"),
         )

@@ -13,6 +13,8 @@ from ya_agent_environment import FileOperator
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    append_guidance,
     output_too_large_message,
     tool_output_size,
     truncate_text,
@@ -37,10 +39,14 @@ from ya_agent_sdk.toolsets.core.filesystem._utils import is_binary_file
 logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-# Hard output size limit (aligned with glob) -- soft-truncate before spilling to a temp file.
-_OUTPUT_HARD_LIMIT = 20000
+# Hard output size limit (aligned with other structured core tool results).
+_OUTPUT_HARD_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 # Max matching_line length in truncated output
 _TRUNCATED_LINE_MAX = 300
+DEFAULT_MAX_RESULTS = 50
+DEFAULT_MAX_MATCHES_PER_FILE = 10
+DEFAULT_MAX_FILES = 50
+DEFAULT_CONTEXT_LINES = 2
 
 
 @cache
@@ -185,22 +191,39 @@ async def _guard_output_size(
     if len(serialized) <= _OUTPUT_HARD_LIMIT:
         return results
 
-    # Phase 1: soft truncation
+    # Preserve the original context-rich result before building a compact model preview.
+    output_path = await write_tmp_output(context, prefix="grep", content=serialized, extension="json")
+    guidance = output_too_large_message(
+        size=len(serialized),
+        output_path=output_path,
+        noun="results",
+    )
+
+    # Phase 1: drop context and limit matching-line length.
     truncated = _truncate_results(results)
-    serialized = json.dumps(truncated, default=str, ensure_ascii=False)
-    if len(serialized) <= _OUTPUT_HARD_LIMIT:
+    truncated["<system>"] = append_guidance(
+        truncated.get("<system>") if isinstance(truncated.get("<system>"), str) else None,
+        guidance,
+    )
+    truncated["truncated"] = True
+    if output_path is not None:
+        truncated["output_file_path"] = output_path
+    if _fits_hard_limit(truncated):
         return truncated
 
-    # Phase 2: write full truncated results to temp file, return bounded preview
-    logger.info("Truncated results still too large (%d chars), writing to temp file", len(serialized))
-    output_path = await write_tmp_output(context, prefix="grep", content=serialized, extension="json")
+    # Phase 2: return as many compact matches as fit the hard limit.
+    match_keys = [
+        key
+        for key, value in truncated.items()
+        if not key.startswith("<") and isinstance(value, dict) and "line_number" in value
+    ]
+    metadata = {key: value for key, value in truncated.items() if key.startswith("<")}
 
-    # Extract match keys and metadata
-    match_keys = [k for k in truncated if not k.startswith("<")]
-    metadata = {k: v for k, v in truncated.items() if k.startswith("<")}
-
-    # Build preview incrementally to guarantee it stays within the hard limit.
-    preview: dict[str, Any] = {"total_matches": len(match_keys), "showing": 0}
+    preview: dict[str, Any] = {
+        "total_matches": len(match_keys),
+        "showing": 0,
+        "truncated": True,
+    }
     skill_reminder = metadata.pop("<system-reminder>", None)
     if isinstance(skill_reminder, str):
         preview, _ = _fit_string_metadata(preview, "<system-reminder>", skill_reminder)
@@ -215,6 +238,7 @@ async def _guard_output_size(
         noun="results",
     )
     preview, _ = _fit_string_metadata(preview, "<system>", system_message)
+    metadata.pop("<system>", None)
     preview = _add_preview_metadata(preview, metadata)
 
     for key in match_keys:
@@ -356,20 +380,32 @@ class GrepTool(BaseTool):
         ] = ".",
         context_lines: Annotated[
             int,
-            Field(description="Context lines before/after matches (default: 2)", default=2),
-        ] = 2,
+            Field(
+                description=f"Context lines before/after matches (default: {DEFAULT_CONTEXT_LINES})",
+                default=DEFAULT_CONTEXT_LINES,
+            ),
+        ] = DEFAULT_CONTEXT_LINES,
         max_results: Annotated[
             int,
-            Field(description="Max total matches (default: 100, -1 for unlimited)", default=100),
-        ] = 100,
+            Field(
+                description=f"Max total matches (default: {DEFAULT_MAX_RESULTS}, -1 for unlimited)",
+                default=DEFAULT_MAX_RESULTS,
+            ),
+        ] = DEFAULT_MAX_RESULTS,
         max_matches_per_file: Annotated[
             int,
-            Field(description="Max matches per file (default: 20, -1 for unlimited)", default=20),
-        ] = 20,
+            Field(
+                description=(f"Max matches per file (default: {DEFAULT_MAX_MATCHES_PER_FILE}, -1 for unlimited)"),
+                default=DEFAULT_MAX_MATCHES_PER_FILE,
+            ),
+        ] = DEFAULT_MAX_MATCHES_PER_FILE,
         max_files: Annotated[
             int,
-            Field(description="Max files to search (default: 50, -1 for unlimited)", default=50),
-        ] = 50,
+            Field(
+                description=f"Max files to search (default: {DEFAULT_MAX_FILES}, -1 for unlimited)",
+                default=DEFAULT_MAX_FILES,
+            ),
+        ] = DEFAULT_MAX_FILES,
         include_ignored: Annotated[
             bool,
             Field(

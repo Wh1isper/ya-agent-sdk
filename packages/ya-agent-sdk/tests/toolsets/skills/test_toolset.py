@@ -585,7 +585,7 @@ description: Documents things.
 
             code_result = await view_tool.call(mock_ctx, file_path="skills/doc-skill/helper.py")
             assert isinstance(code_result, dict)
-            assert code_result["metadata"]["current_segment"]["lines_to_show"] == 300
+            assert code_result["metadata"]["current_segment"]["lines_to_show"] == 200
 
 
 async def test_skill_toolset_unregisters_view_relaxed_patterns_when_no_skills(tmp_path: Path):

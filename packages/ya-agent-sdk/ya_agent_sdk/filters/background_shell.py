@@ -10,6 +10,8 @@ Large output is truncated and full content is written to tmp files.
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from html import escape as _html_escape
 
 from ya_agent_environment import CompletedProcess
@@ -18,12 +20,12 @@ from ya_agent_environment.output import truncate_text_head_tail
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.events import BackgroundShellCompleteEvent
-from ya_agent_sdk.toolsets.core._output import write_tmp_output
+from ya_agent_sdk.toolsets.core._output import DEFAULT_OUTPUT_TRUNCATE_LIMIT, write_tmp_output
 
 logger = get_logger(__name__)
 
 # Truncation limit for injected output (per stream)
-_INJECT_TRUNCATE_LIMIT = 20000
+_INJECT_TRUNCATE_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 
 
 def _xml_escape(s: str, *, quote: bool = False) -> str:
@@ -95,6 +97,38 @@ async def _write_truncated_files(
     return path_lines
 
 
+async def _guard_injected_output(
+    content: str,
+    completed: list[CompletedProcess],
+    summary: str | None,
+    context: AgentContext,
+) -> str:
+    """Bound the aggregate completion injection and preserve retained results."""
+    if len(content) <= _INJECT_TRUNCATE_LIMIT:
+        return content
+
+    serialized = json.dumps(
+        {
+            "completed": [asdict(result) for result in completed],
+            "status_summary": summary,
+        },
+        default=str,
+        ensure_ascii=False,
+    )
+    output_path = await write_tmp_output(
+        context,
+        prefix="background-shell-results",
+        content=serialized,
+        extension="json",
+    )
+    marker = (
+        f"\n...(truncated; retained background results saved in `{output_path}`)...\n"
+        if output_path is not None
+        else "\n...(truncated; failed to save retained background results)...\n"
+    )
+    return truncate_text_head_tail(content, _INJECT_TRUNCATE_LIMIT, marker=marker)
+
+
 async def consume_background_results(context: AgentContext) -> str | None:
     """Consume and format completed shell work for canonical feature input."""
     shell = context.shell
@@ -125,4 +159,5 @@ async def consume_background_results(context: AgentContext) -> str | None:
     if summary:
         injection_parts.append(summary)
     logger.debug("Collected %d background result(s)", len(completed))
-    return "\n\n".join(injection_parts)
+    content = "\n\n".join(injection_parts)
+    return await _guard_injected_output(content, completed, summary, context)

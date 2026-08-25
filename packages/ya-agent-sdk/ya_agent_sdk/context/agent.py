@@ -649,17 +649,17 @@ class ToolConfig(BaseModel):
     view_relaxed_text_file_size: int = 50 * 1024 * 1024
     """Maximum text file size in bytes for paths matched by view_relaxed_text_patterns."""
 
-    view_relaxed_line_limit: int = 5000
+    view_relaxed_line_limit: int = 500
     """Line limit for relaxed paths when the effective line_limit is the normal default."""
 
-    view_relaxed_max_line_length: int = 20000
+    view_relaxed_max_line_length: int = 4000
     """Max line length for relaxed paths when the effective max_line_length is the normal default."""
 
-    view_max_content_chars: int = 60000
-    """Maximum returned text characters for normal view output before content truncation."""
+    view_max_content_chars: int = Field(default=16000, ge=1024)
+    """Maximum serialized characters for normal text view output before pagination."""
 
-    view_relaxed_max_content_chars: int = 250000
-    """Maximum returned text characters for relaxed view output before content truncation."""
+    view_relaxed_max_content_chars: int = Field(default=32000, ge=1024)
+    """Maximum serialized characters for relaxed text view output before pagination."""
 
     edit_max_file_size: int = 20 * 1024 * 1024
     """Maximum file size in bytes that edit/multi_edit tools will process. Default: 20 MB."""

@@ -14,13 +14,22 @@ from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem.grep import (
     _OUTPUT_HARD_LIMIT,
     _TRUNCATED_LINE_MAX,
+    DEFAULT_CONTEXT_LINES,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MATCHES_PER_FILE,
+    DEFAULT_MAX_RESULTS,
     GrepTool,
 )
 
 
 async def test_grep_attributes(agent_context: AgentContext) -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description, and bounded defaults."""
     assert GrepTool.name == "grep"
+    assert _OUTPUT_HARD_LIMIT == 12_000
+    assert DEFAULT_MAX_RESULTS == 50
+    assert DEFAULT_MAX_MATCHES_PER_FILE == 10
+    assert DEFAULT_MAX_FILES == 50
+    assert DEFAULT_CONTEXT_LINES == 2
     assert "regex" in GrepTool.description
     tool = GrepTool()
     mock_run_ctx = MagicMock(spec=RunContext)
@@ -526,7 +535,11 @@ async def test_grep_hard_limit_writes_temp_file(tmp_path: Path) -> None:
         file_op = ctx.file_operator
         assert file_op is not None
         content = await file_op.read_file(result["output_file_path"])
-        assert len(content) > 0
+        saved = json.loads(content)
+        assert saved
+        assert any(
+            isinstance(value, dict) and "context" in value for key, value in saved.items() if not key.startswith("<")
+        )
 
 
 async def test_grep_hard_preview_rejects_oversized_temp_path(monkeypatch: pytest.MonkeyPatch) -> None:

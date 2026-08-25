@@ -11,7 +11,7 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.toolsets.core._output import write_tmp_output
+from ya_agent_sdk.toolsets.core._output import DEFAULT_OUTPUT_TRUNCATE_LIMIT, write_tmp_output
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._gitignore import GitignoreFilterResult
 from ya_agent_sdk.toolsets.core.filesystem._search import (
@@ -24,8 +24,8 @@ logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
 
-DEFAULT_MAX_RESULTS = 500
-OUTPUT_TRUNCATE_LIMIT = 20000
+DEFAULT_MAX_RESULTS = 200
+OUTPUT_TRUNCATE_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 
 
 @cache

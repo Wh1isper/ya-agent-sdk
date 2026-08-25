@@ -1,19 +1,24 @@
 """Tests for ya_agent_sdk.toolsets.core.filesystem.view module."""
 
+import json
 import os
 from contextlib import AsyncExitStack
 from io import BytesIO
 from pathlib import Path
+from typing import get_type_hints
 from unittest.mock import MagicMock, patch
 
 from inline_snapshot import snapshot
 from PIL import Image
+from pydantic import TypeAdapter
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.filesystem.view import (
+    DEFAULT_LINE_LIMIT,
+    DEFAULT_MAX_LINE_LENGTH,
     IMAGE_EXTENSIONS,
     MEDIA_TYPE_MAP,
     SUPPORTED_IMAGE_MEDIA_TYPES,
@@ -38,14 +43,31 @@ def _make_wide_png() -> bytes:
 
 
 async def test_view_tool_attributes(agent_context: AgentContext) -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description, and bounded defaults."""
+    from ya_agent_sdk.context import ToolConfig
+
     assert ViewTool.name == "view"
+    assert DEFAULT_LINE_LIMIT == 200
+    assert DEFAULT_MAX_LINE_LENGTH == 2000
+    config = ToolConfig()
+    assert config.view_max_content_chars == 16_000
+    assert config.view_relaxed_line_limit == 500
+    assert config.view_relaxed_max_line_length == 4000
+    assert config.view_relaxed_max_content_chars == 32_000
     assert "Read files" in ViewTool.description
     tool = ViewTool()
     mock_run_ctx = MagicMock(spec=RunContext)
     mock_run_ctx.deps = agent_context
     instruction = await tool.get_instruction(mock_run_ctx)
     assert instruction is not None
+
+
+def test_view_tool_schema_requires_positive_text_limits() -> None:
+    """Tool schemas should reject zero-length pagination and line budgets."""
+    hints = get_type_hints(ViewTool.call, include_extras=True)
+
+    assert TypeAdapter(hints["line_limit"]).json_schema()["minimum"] == 1
+    assert TypeAdapter(hints["max_line_length"]).json_schema()["minimum"] == 1
 
 
 def test_view_tool_initialization(agent_context: AgentContext) -> None:
@@ -86,6 +108,25 @@ def test_get_media_type(agent_context: AgentContext) -> None:
     for ext, expected in MEDIA_TYPE_MAP.items():
         assert tool._get_media_type(f"test{ext}") == expected
     assert tool._get_media_type("test.unknown") == "application/octet-stream"
+
+
+async def test_view_rejects_non_positive_text_limits(tmp_path: Path) -> None:
+    """Direct callers should not create non-advancing pagination responses."""
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("first\nsecond\n")
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path))
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        assert await ViewTool().call(run_ctx, file_path="test.txt", line_limit=0) == (
+            "Error: line_limit must be at least 1."
+        )
+        assert await ViewTool().call(run_ctx, file_path="test.txt", max_line_length=0) == (
+            "Error: max_line_length must be at least 1."
+        )
 
 
 async def test_view_text_file_simple(tmp_path: Path) -> None:
@@ -177,6 +218,61 @@ async def test_view_text_file_line_truncation(tmp_path: Path) -> None:
         assert isinstance(result, dict)
         assert "(line truncated)" in result["content"]
         assert result["metadata"]["truncation_info"]["lines_truncated"] is True
+
+
+async def test_view_content_budget_preserves_line_pagination(tmp_path: Path) -> None:
+    """Serialized output limits should stop on a line boundary without skipping content."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(env=env, tool_config=ToolConfig(view_max_content_chars=1200))
+        )
+        tool = ViewTool()
+        lines = [f'Line {index}: "quoted" \\ ' + "x" * 80 for index in range(30)]
+        (tmp_path / "budget.txt").write_text("\n".join(lines))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        first = await tool.call(run_ctx, file_path="budget.txt")
+        assert isinstance(first, dict)
+        assert len(json.dumps(first, ensure_ascii=False)) <= 1200
+        shown = first["metadata"]["current_segment"]["lines_to_show"]
+        assert 0 < shown < len(lines)
+        assert first["metadata"]["current_segment"]["end_line"] == shown
+
+        second = await tool.call(run_ctx, file_path="budget.txt", line_offset=shown)
+        assert isinstance(second, dict)
+        assert second["content"].startswith(lines[shown])
+        assert len(json.dumps(second, ensure_ascii=False)) <= 1200
+
+
+async def test_view_small_budget_still_advances_past_a_long_line(tmp_path: Path) -> None:
+    """A long first line should be shortened further rather than produce a zero-line page."""
+    from ya_agent_sdk.context import ToolConfig
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(
+            AgentContext(env=env, tool_config=ToolConfig(view_max_content_chars=1024))
+        )
+        (tmp_path / "long.txt").write_text("x" * 5000 + "\nsecond line")
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        result = await ViewTool().call(run_ctx, file_path="long.txt")
+
+        assert isinstance(result, dict)
+        assert len(json.dumps(result, ensure_ascii=False)) <= 1024
+        assert result["metadata"]["current_segment"]["lines_to_show"] == 1
+        assert result["metadata"]["current_segment"]["end_line"] == 1
+        assert result["metadata"]["truncation_info"]["lines_truncated"] is True
+        assert result["metadata"]["truncation_info"]["content_truncated"] is True
 
 
 async def test_view_file_not_found(tmp_path: Path) -> None:
@@ -779,7 +875,7 @@ async def test_view_relaxed_text_pattern_leading_slash_anchors_to_root(tmp_path:
 
         nested_result = await tool.call(mock_run_ctx, file_path="nested/AGENTS.md")
         assert isinstance(nested_result, dict)
-        assert nested_result["metadata"]["current_segment"]["lines_to_show"] == 300
+        assert nested_result["metadata"]["current_segment"]["lines_to_show"] == 200
 
         root_result = await tool.call(mock_run_ctx, file_path="AGENTS.md")
         assert isinstance(root_result, str)
@@ -851,5 +947,5 @@ async def test_view_relaxed_text_pattern_does_not_relax_non_matching_code(tmp_pa
 
         result = await tool.call(mock_run_ctx, file_path="helper.py")
         assert isinstance(result, dict)
-        assert result["metadata"]["current_segment"]["lines_to_show"] == 300
+        assert result["metadata"]["current_segment"]["lines_to_show"] == 200
         assert result["metadata"]["current_segment"]["has_more_content"] is True

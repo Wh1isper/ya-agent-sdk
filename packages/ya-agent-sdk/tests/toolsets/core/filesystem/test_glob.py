@@ -14,8 +14,10 @@ from ya_agent_sdk.toolsets.core.filesystem.glob import GlobTool
 
 
 async def test_glob_attributes(agent_context: AgentContext) -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description, and bounded defaults."""
     assert GlobTool.name == "glob"
+    assert glob_module.DEFAULT_MAX_RESULTS == 200
+    assert glob_module.OUTPUT_TRUNCATE_LIMIT == 12_000
     assert "glob pattern" in GlobTool.description
     tool = GlobTool()
     mock_run_ctx = MagicMock(spec=RunContext)
