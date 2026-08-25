@@ -205,6 +205,45 @@ def test_input_inbox_is_idempotent_and_priority_ordered(tmp_path: Path) -> None:
         assert applied.state is InputState.applied
 
 
+def test_terminal_and_input_writes_use_transaction_order_without_ingress_fence(tmp_path: Path) -> None:
+    with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
+        session = store.create_session("/workspace")
+        run = store.start_run(_request(session.session_id))
+        store.set_run_status(run.logical_run_id, LogicalRunStatus.running)
+        initial = store.list_inputs(run.logical_run_id)[0]
+        store.transition_input(initial.input_id, InputState.accepted, InputState.applied)
+
+        assert store.list_pending_inputs(run.logical_run_id) == ()
+        before_terminal = store.accept_input(
+            run.logical_run_id,
+            ["late guidance"],
+            idempotency_key="before-terminal",
+            priority=InputPriority.asap,
+        )
+        assert before_terminal.state is InputState.accepted
+
+        store.commit_terminal(
+            run.logical_run_id,
+            commit_kind="success",
+            payload=RevisionPayload(terminal={"status": "completed", "output": "done"}),
+            terminal_status=LogicalRunStatus.completed,
+            event_type="RUN_FINISHED",
+        )
+        terminal_winner = next(
+            item for item in store.list_inputs(run.logical_run_id) if item.input_id == before_terminal.input_id
+        )
+        assert terminal_winner.state is InputState.rejected
+
+        after_terminal = store.accept_input(
+            run.logical_run_id,
+            ["too late"],
+            idempotency_key="after-terminal",
+            priority=InputPriority.asap,
+        )
+        assert after_terminal.state is InputState.rejected
+        assert after_terminal.rejection_reason == "logical run is already completed"
+
+
 def test_action_batch_survives_partial_idempotent_decisions(tmp_path: Path) -> None:
     with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
         session = store.create_session("/workspace")

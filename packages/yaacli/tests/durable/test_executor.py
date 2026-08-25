@@ -119,6 +119,43 @@ async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path
         store.close()
 
 
+async def test_terminal_fallback_prefers_live_tool_projection_over_stable_checkpoint(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    live_projection = [
+        {"type": "RUN_STARTED", "runId": "run-live"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "visible-tool",
+            "toolCallName": "shell_exec",
+            "delta": '{"command":"pytest"}',
+        },
+        {
+            "type": "TOOL_CALL_RESULT",
+            "toolCallId": "visible-tool",
+            "toolCallName": "shell_exec",
+            "content": "tests running",
+        },
+    ]
+    worker = await LocalExecutionWorker.create(
+        store=store,
+        state_path=tmp_path / "coordinator.state",
+        active_runtime_id="test",
+        runtime_specs=[_runtime_spec(tmp_path, TestModel())],
+        display_projection_provider=lambda: live_projection,
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="tool-projection-session")
+        run = service.accept_turn(session.session_id, ["run tools"], idempotency_key="tool-turn")
+
+        payload = worker.coordinator._stable_payload(run)
+
+        assert any(event.get("toolCallId") == "visible-tool" for event in payload.display_projection)
+    finally:
+        await worker.close()
+        store.close()
+
+
 async def test_active_feature_input_is_applied_once_across_tool_nodes(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     marker = "unique-background-shell-completion"

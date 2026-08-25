@@ -147,15 +147,22 @@ than dynamic probing of model history.
 
 ## Cancellation and Recovery
 
-Cancellation closes input, cancels the owning process task, commits cancelled terminal
-state, and never synthesizes approval or external results.
+Cancellation records the main run as cancelling, cancels both the durable execution and
+its TUI interaction waiter, commits cancelled terminal state, and never synthesizes
+approval or external results. A pending approval, deferred result, or structured question
+therefore cannot keep the foreground alive after cancellation. Main-run input has no
+ingress fence: SQLite transaction order determines whether an input
+is included by an earlier graph-boundary snapshot or is persisted as rejected after the
+cancellation/terminal write wins. Child execution input fences remain independent.
 
 On controlled cancellation during a continuation segment, YAACLI publishes safe partial
-text and host state while keeping the old execution terminal. After process restart,
-pending batches remain auditable in `SessionStore`, but the old process-owned execution
-is committed as `interrupted` from its stable suspended checkpoint. YAACLI does not
-recreate the old task or replay the incomplete segment. A later continuation is an
-explicit new turn from the committed head.
+text and host state while keeping the old execution terminal. Already observed tool-call
+display records remain in the live bounded projection even when cancellation lands at a
+native segment/checkpoint boundary. After process restart, pending batches remain
+auditable in `SessionStore`, but the old process-owned execution is committed as
+`interrupted` from its stable suspended checkpoint. YAACLI does not recreate the old task
+or replay the incomplete segment. A later continuation is an explicit new turn from the
+committed head.
 
 Session switching scopes actions by logical-run/session identity, so an old session's
 decision cannot resolve a new session's request.

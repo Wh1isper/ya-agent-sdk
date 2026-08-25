@@ -124,7 +124,7 @@ Large state uses file-first publication:
 3. flush and `fsync` the temporary file;
 4. atomically replace `state.json` with `os.replace`;
 5. `fsync` the parent directory; and
-6. publish metadata, head, run status, input fences, and terminal event in SQLite.
+6. publish metadata, head, run status, input resolution, and terminal event in SQLite.
 
 A crash before the SQLite commit can leave an orphan file, but SQLite never publishes
 a revision or checkpoint whose file was not already installed. Session directories
@@ -170,8 +170,11 @@ including message history and `ResumableState`, then applies audited
 
 Additional user and feature input is stored before acknowledgement. Input states are
 `accepted`, `enqueued`, `applied`, and `rejected`. `DurableInboxPumpCapability` applies
-persisted rows through Pydantic AI's native enqueue mechanism. The terminal input fence
-requires every accepted/enqueued row to become applied or rejected before publication.
+persisted rows through Pydantic AI's native enqueue mechanism. Main-run input has no
+ingress fence: graph-boundary snapshots, input writes, and terminal publication are
+serialized by SQLite transaction order. A snapshot-winning input may be enqueued and
+applied; a terminal-winning input is persisted as rejected, and terminal publication
+resolves every earlier accepted/enqueued row as applied or rejected.
 
 A native `DeferredToolRequests` result creates a transactionally persisted action batch.
 Each decision has stable identity, actor, timestamp, and typed payload. A partial batch
@@ -200,7 +203,10 @@ Controlled failure and shutdown may publish the SDK's safe recoverable subset. T
 preserves message history and resumable context as separate typed fields. Canonical model
 history follows the SDK's recoverable-message rules and is never reconstructed from UI
 events. The non-authoritative display projection independently retains observed tool
-invocations so interrupted activity remains visible after reattach.
+invocations so interrupted activity remains visible after reattach. When cancellation
+lands between a native segment and checkpoint publication, the complete live bounded
+display projection takes precedence over the older stable checkpoint, preventing already
+observed tool invocations from being rolled back.
 
 ## Process-Local Subagents
 

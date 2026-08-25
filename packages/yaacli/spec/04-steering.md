@@ -80,11 +80,20 @@ input identity; the payload remains in `SessionStore`.
 - records every native enqueue attempt; and
 - marks the product row applied when any recorded attempt emits `EnqueuedMessagesEvent`.
 
-At a terminal graph boundary it closes ingress and reconciles every remaining record.
+At a terminal graph boundary it reads one serialized snapshot of unresolved input; it
+does not close ingress or lock the session. SQLite transaction order provides
+last-write-wins behavior. An input committed before the boundary snapshot can be
+injected. If graph completion advances first, the terminal commit rejects any input it
+finds still unresolved. Input submitted after the terminal write is persisted directly
+as `rejected` with the terminal reason. Neither ordering raises an admission transition
+error.
+
 Repeated graph nodes in one attempt cannot duplicate the same input or replace the
 receipt identity before its application event arrives. Accepted input is therefore
 applied or explicitly rejected; it is never silently cleared because a foreground task
-ended.
+ended. The TUI acknowledges and notifies only `accepted` input. A terminal-winning
+`rejected` result preserves the compose draft without adding a session lock, deferred
+next-prompt queue, or special race detector.
 
 ## Input States
 
@@ -93,7 +102,7 @@ ended.
 | `accepted` | Payload and idempotency identity committed to product storage |
 | `enqueued` | Owning native run accepted it and returned an enqueue ID |
 | `applied` | Native enqueue event confirmed canonical graph application |
-| `rejected` | Terminal fence or policy rejected unapplied input with a reason |
+| `rejected` | Terminal state or policy won before native application; includes a reason |
 
 The status bar counts non-initial user inputs in `accepted` or `enqueued`. It never
 renders their content and does not maintain another queue. After durable acceptance, the transcript records a replayable
@@ -182,7 +191,7 @@ Tests cover:
 - persistence before workflow notification;
 - idempotent input and outbox handling;
 - native enqueue and application-state transitions;
-- terminal accepted/applied/rejected fencing;
+- terminal/input last-write-wins ordering without an ingress fence;
 - active-phase input routing and busy control precedence;
 - strict HITL decisions without implicit approval;
 - foreground ownership race prevention;
