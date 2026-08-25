@@ -27,6 +27,7 @@ from prompt_toolkit.layout import ConditionalContainer, FloatContainer, HSplit, 
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.utils import Event
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import BinaryContent, DeferredToolRequests, DeferredToolResults, PartStartEvent, ToolDenied
 from pydantic_ai.messages import (
@@ -46,6 +47,7 @@ from ya_agent_sdk.usage import CostEstimate
 
 # Import the components we're testing
 from yaacli.app import BUSY_CONTROL_COMMANDS, TUIApp, TUIState
+from yaacli.app.shell import ComposeSnapshot
 from yaacli.app.state import TUIPhase
 from yaacli.app.tui import (
     USER_INPUT_TIMEOUT_PROMPT,
@@ -1026,7 +1028,7 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
         captured.update(kwargs)
         return prompt_app
 
-    monkeypatch.setattr("yaacli.app.tui.Application", capture_application)
+    monkeypatch.setattr("yaacli.app.shell.Application", capture_application)
 
     await app.run()
 
@@ -1048,6 +1050,70 @@ async def test_tui_app_real_layout_mounts_hidden_task_pane_and_completion_menu(
     assert root.floats[0].content.filter() is False
     assert root.floats[1].content.filter() is False
     assert any(isinstance(item.content, CompletionsMenu) for item in root.floats)
+
+
+@pytest.mark.asyncio
+async def test_tui_app_handoff_restores_draft_and_submits_after_initial_render() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._theme_terminal_resolved = True
+    app._restore_startup_session = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+    application = MagicMock()
+    application._handle_exception = MagicMock()
+    application.after_render = Event(application)
+    events: list[str] = []
+
+    async def run_async() -> None:
+        events.append("initial-render")
+        application.after_render.fire()
+        await asyncio.sleep(0)
+
+    application.run_async = run_async
+    app._build_tui_shell = MagicMock(return_value=(application, input_area))  # type: ignore[method-assign]
+    app._submit_input = MagicMock(side_effect=lambda *_args: events.append("submit"))  # type: ignore[method-assign]
+    snapshot = ComposeSnapshot(
+        text="queued prompt",
+        cursor_position=4,
+        submit_when_ready=True,
+        input_mode="send",
+        mouse_enabled=False,
+    )
+
+    await app.run(initial_compose=snapshot)
+
+    assert input_area.buffer.text == "queued prompt"
+    assert input_area.buffer.cursor_position == 4
+    assert app._input_mode == "send"
+    assert app._mouse_enabled is False
+    application.output.disable_mouse_support.assert_called_once_with()
+    app._submit_input.assert_called_once_with("queued prompt", input_area)
+    assert events == ["initial-render", "submit"]
+
+
+@pytest.mark.asyncio
+async def test_tui_app_does_not_submit_handoff_draft_when_initial_render_fails() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._theme_terminal_resolved = True
+    app._restore_startup_session = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+    application = MagicMock()
+    application._handle_exception = MagicMock()
+    application.after_render = Event(application)
+
+    async def run_async() -> None:
+        raise RuntimeError("initial render failed")
+
+    application.run_async = run_async
+    app._build_tui_shell = MagicMock(return_value=(application, input_area))  # type: ignore[method-assign]
+    app._submit_input = MagicMock()  # type: ignore[method-assign]
+    snapshot = ComposeSnapshot(text="queued prompt", cursor_position=4, submit_when_ready=True)
+
+    with pytest.raises(RuntimeError, match="initial render failed"):
+        await app.run(initial_compose=snapshot)
+    await asyncio.sleep(0)
+
+    assert input_area.buffer.text == "queued prompt"
+    app._submit_input.assert_not_called()
 
 
 def test_tui_app_task_pane_shows_task_list_and_statuses() -> None:

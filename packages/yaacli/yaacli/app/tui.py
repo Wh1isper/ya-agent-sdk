@@ -40,17 +40,14 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from prompt_toolkit import Application
-from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import ConditionalContainer, Float, FloatContainer, HSplit, Layout, Window
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.layout import Window
+from prompt_toolkit.output.base import Output
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from prompt_toolkit.widgets import Box, Frame, TextArea
+from prompt_toolkit.widgets import TextArea
 from pydantic import BaseModel, JsonValue, TypeAdapter
 from pydantic_ai import (
     AgentSpec,
@@ -146,6 +143,7 @@ from yaacli.app.commands import (
     format_skill_invocation,
     parse_skill_invocation,
 )
+from yaacli.app.shell import ComposeSnapshot, TUIShellCallbacks, build_tui_shell
 from yaacli.app.state import TUIPhase, TUIStateMachine
 from yaacli.clipboard import ClipboardImageReadResult, read_clipboard_image
 from yaacli.config import ConfigManager, YaacliConfig
@@ -558,6 +556,7 @@ class TUIApp:
     verbose: bool = False
     working_dir: Path = field(default_factory=Path.cwd)
     initial_session_id: str | None = None
+    query_terminal_on_enter: bool = True
 
     # Runtime state
     _state: TUIState = field(default=TUIState.IDLE, init=False)
@@ -608,6 +607,7 @@ class TUIApp:
     _event_renderer: EventRenderer = field(default_factory=EventRenderer, init=False)
     _theme: ResolvedTheme = field(default_factory=lambda: fallback_theme("auto"), init=False)
     _theme_terminal_resolved: bool = field(default=False, init=False)
+    _startup_session_restored: bool | None = field(default=None, init=False)
     _display_replay: BoundedDisplayReplay = field(
         default_factory=lambda: BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG), init=False
     )
@@ -989,7 +989,7 @@ class TUIApp:
 
     async def __aenter__(self) -> TUIApp:
         """Initialize one durable worker shared by every TUI turn."""
-        self._configure_theme(query_terminal=True)
+        self._configure_theme(query_terminal=self.query_terminal_on_enter)
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
         try:
@@ -1779,17 +1779,22 @@ class TUIApp:
             return cast(ThemePreference, preference)
         return "auto"
 
-    def _configure_theme(self, *, query_terminal: bool) -> None:
-        """Resolve the color theme and apply it to Rich event rendering."""
-        preference = self._configured_theme_preference()
-        self._theme = resolve_theme(preference) if query_terminal else fallback_theme(preference)
+    def _apply_resolved_theme(self, theme: ResolvedTheme, *, terminal_resolved: bool) -> None:
+        """Apply one concrete theme to both Rich and prompt-toolkit rendering."""
+        self._theme = theme
         display = getattr(self.config, "display", None)
         self._event_renderer.configure_rendering(
             code_theme=self._theme.syntax_theme,
             max_tool_result_lines=_positive_int_config(getattr(display, "max_tool_result_lines", None), 2),
             max_arg_length=_positive_int_config(getattr(display, "max_arg_length", None), 50),
         )
-        self._theme_terminal_resolved = query_terminal
+        self._theme_terminal_resolved = terminal_resolved
+
+    def _configure_theme(self, *, query_terminal: bool) -> None:
+        """Resolve the color theme and apply it to Rich event rendering."""
+        preference = self._configured_theme_preference()
+        theme = resolve_theme(preference) if query_terminal else fallback_theme(preference)
+        self._apply_resolved_theme(theme, terminal_resolved=query_terminal)
 
     def _new_stream_accumulator(self) -> BoundedTextAccumulator:
         return BoundedTextAccumulator(
@@ -5972,6 +5977,12 @@ class TUIApp:
             )
         return True
 
+    async def prepare_startup_session(self) -> bool:
+        """Restore startup state once before the interactive frontend takes ownership."""
+        if self._startup_session_restored is None:
+            self._startup_session_restored = await self._restore_startup_session()
+        return self._startup_session_restored
+
     async def _restore_startup_session(self) -> bool:
         """Restore an explicitly requested session or newest workspace head."""
         if self._session_service is None or self._durable_store is None:
@@ -6005,13 +6016,62 @@ class TUIApp:
     # Main Run Loop
     # =========================================================================
 
-    async def run(self) -> None:
+    def _build_tui_shell(self, *, output: Output | None = None) -> tuple[Application[None], TextArea]:
+        """Build the canonical shell after runtime and session initialization."""
+        shell = build_tui_shell(
+            TUIShellCallbacks(
+                output_text=self._get_output_text,
+                scroll_output=self._scroll_output,
+                task_text=self._get_task_text,
+                task_height=self._get_task_height,
+                has_tasks=lambda: bool(self._get_tasks()),
+                model_selector_text=self._get_model_selector_text,
+                model_selector_height=self._get_model_selector_height,
+                model_selector_open=lambda: self._model_selector_open,
+                session_selector_text=self._get_session_selector_text,
+                session_selector_height=self._get_session_selector_height,
+                session_selector_width=self._get_session_selector_width,
+                session_selector_title=self._get_session_selector_title,
+                session_selector_open=lambda: self._session_selector_open,
+                status_text=self._get_status_text,
+                status_height=self._get_status_height,
+                prompt=self._get_prompt,
+                terminal_height=self._get_terminal_height,
+                input_key_bindings=self._setup_input_keybindings,
+                application_key_bindings=self._setup_keybindings,
+                command_words=self._command_words,
+                session_words=self._session_completion_ids,
+                skill_words=self._skill_words,
+            ),
+            style=self._setup_style(),
+            completer=SlashCommandCompleter(
+                self._command_words,
+                self._session_completion_ids,
+                self._skill_words,
+            ),
+            output=output,
+            mouse_support=self._mouse_enabled,
+        )
+        self._app = shell.application
+        self._input_area = shell.input_area
+        self._output_window = shell.output_window
+        return shell.application, shell.input_area
+
+    async def run(
+        self,
+        *,
+        initial_compose: ComposeSnapshot | None = None,
+        output: Output | None = None,
+        resolved_theme: ResolvedTheme | None = None,
+    ) -> None:
         """Run the TUI application."""
-        if not self._theme_terminal_resolved:
+        if resolved_theme is not None:
+            self._apply_resolved_theme(resolved_theme, terminal_resolved=True)
+        elif not self._theme_terminal_resolved:
             self._configure_theme(query_terminal=True)
             logger.debug("Resolved terminal theme: %s (%s)", self._theme.variant, self._theme.source)
 
-        restored_session = await self._restore_startup_session()
+        restored_session = await self.prepare_startup_session()
 
         # Welcome message
         title = Text("YAACLI CLI", style="bold magenta")
@@ -6022,174 +6082,12 @@ class TUIApp:
         # Show session ID
         self._append_output(f"Session: {self._session_id}{' (restored)' if restored_session else ''}")
 
-        # Create scrollable FormattedTextControl with mouse support
-        tui_ref = self
-
-        class ScrollableFormattedTextControl(FormattedTextControl):
-            """FormattedTextControl that handles mouse scroll events."""
-
-            def mouse_handler(self, mouse_event: MouseEvent) -> object:
-                """Handle mouse scroll events."""
-                if mouse_event.event_type == MouseEventType.SCROLL_UP:
-                    tui_ref._scroll_output(-3)
-                    if tui_ref._app:
-                        tui_ref._app.invalidate()
-                    return None
-                elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-                    tui_ref._scroll_output(3)
-                    if tui_ref._app:
-                        tui_ref._app.invalidate()
-                    return None
-                return super().mouse_handler(mouse_event)
-
-        # Create output control and window (no ScrollablePane - virtual viewport handles scrolling)
-        output_control = ScrollableFormattedTextControl(self._get_output_text)
-        output_window = Window(
-            content=output_control,
-            wrap_lines=False,
-        )
-        self._output_window = output_window
-
-        # Persistent task pane: hidden when empty and one-line compact by default.
-        task_control = FormattedTextControl(self._get_task_text)
-        task_window = ConditionalContainer(
-            Window(
-                content=task_control,
-                height=self._get_task_height,
-                style="class:task-pane",
-                wrap_lines=False,
-            ),
-            filter=Condition(lambda: bool(self._get_tasks())),
-        )
-
-        # Model selector is a floating overlay and never consumes output rows.
-        model_selector_control = FormattedTextControl(self._get_model_selector_text)
-        model_selector_window = ConditionalContainer(
-            Window(
-                content=model_selector_control,
-                height=self._get_model_selector_height,
-                style="class:model-selector",
-                wrap_lines=False,
-            ),
-            filter=Condition(lambda: self._model_selector_open),
-        )
-
-        session_selector_control = FormattedTextControl(self._get_session_selector_text)
-        session_selector_body = Box(
-            Window(
-                content=session_selector_control,
-                height=self._get_session_selector_height,
-                style="class:session-selector",
-                wrap_lines=False,
-            ),
-            padding_left=1,
-            padding_right=1,
-            style="class:session-selector",
-        )
-        session_selector_window = ConditionalContainer(
-            Frame(
-                session_selector_body,
-                title=self._get_session_selector_title,
-                style="class:session-selector.frame",
-            ),
-            filter=Condition(lambda: self._session_selector_open),
-        )
-
-        # Status bar
-        status_bar = Window(
-            content=FormattedTextControl(self._get_status_text),
-            height=self._get_status_height,
-            style="class:status-bar",
-            wrap_lines=True,
-        )
-
-        # Input area with mouse scroll support
-        class ScrollableBufferControl(BufferControl):
-            """BufferControl that handles mouse scroll events for input area."""
-
-            def mouse_handler(self, mouse_event: MouseEvent) -> object:
-                """Handle mouse scroll events to scroll input text."""
-                # Get the window that contains this control
-                if mouse_event.event_type == MouseEventType.SCROLL_UP:
-                    # Move cursor up by 1 line to scroll content
-                    buff = self.buffer
-                    if buff:
-                        doc = buff.document
-                        if doc.cursor_position_row > 0:
-                            buff.cursor_up()
-                        return None
-                elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-                    buff = self.buffer
-                    if buff:
-                        doc = buff.document
-                        if doc.cursor_position_row < doc.line_count - 1:
-                            buff.cursor_down()
-                        return None
-                return super().mouse_handler(mouse_event)
-
-        input_area = TextArea(
-            multiline=True,
-            prompt=self._get_prompt,
-            style="class:input-area",
-            focusable=True,
-            height=lambda: 3 if self._app and self._app.output.get_size().rows < 28 else 5,
-            scrollbar=True,
-            completer=SlashCommandCompleter(
-                self._command_words,
-                self._session_completion_ids,
-                self._skill_words,
-            ),
-            complete_while_typing=True,
-        )
-
-        self._input_area = input_area
-
-        # Replace the buffer control with our scrollable version
-        original_control = input_area.control
-        scrollable_control = ScrollableBufferControl(
-            buffer=original_control.buffer,
-            input_processors=original_control.input_processors,
-            include_default_input_processors=False,
-            lexer=original_control.lexer,
-            focus_on_click=original_control.focus_on_click,
-            key_bindings=self._setup_input_keybindings(input_area),
-        )
-        input_area.window.content = scrollable_control
-        input_area.control = scrollable_control
-
-        # Layout: floating selectors over a stable Output | Tasks | Status | Input body.
-        body = HSplit([
-            output_window,
-            task_window,
-            status_bar,
-            input_area,
-        ])
-        root = FloatContainer(
-            content=body,
-            floats=[
-                Float(top=1, left=2, right=2, content=model_selector_window),
-                Float(top=1, width=self._get_session_selector_width, content=session_selector_window),
-                Float(
-                    xcursor=True,
-                    ycursor=True,
-                    content=CompletionsMenu(max_height=8, scroll_offset=1, display_arrows=True),
-                ),
-            ],
-        )
-        layout = Layout(root, focused_element=input_area)
-
-        # Key bindings
-        kb = self._setup_keybindings(input_area)
-
-        # Create application
-        self._app = Application(
-            layout=layout,
-            key_bindings=kb,
-            style=self._setup_style(),
-            full_screen=True,
-            mouse_support=True,
-            refresh_interval=1.0,
-        )
+        if initial_compose is not None:
+            self._input_mode = initial_compose.input_mode
+            self._mouse_enabled = initial_compose.mouse_enabled
+        application, input_area = self._build_tui_shell(output=output)
+        if initial_compose is not None:
+            initial_compose.restore(input_area)
 
         # Override prompt_toolkit's exception handler to prevent "Press ENTER to
         # continue..." messages that flash on screen and corrupt the TUI display.
@@ -6201,7 +6099,7 @@ class TUIApp:
         #
         # We replace this with a handler that logs the error silently and triggers
         # a TUI redraw, so the user experience is uninterrupted.
-        original_handle_exception = self._app._handle_exception
+        original_handle_exception = application._handle_exception
 
         def _quiet_exception_handler(loop: asyncio.AbstractEventLoop, context: dict[str, object]) -> None:
             message = context.get("message", "Unhandled asyncio exception")
@@ -6230,19 +6128,34 @@ class TUIApp:
             # the current exception handling output.
             self._schedule_tui_recovery(loop)
 
-        self._app._handle_exception = _quiet_exception_handler  # type: ignore[assignment]
+        application._handle_exception = _quiet_exception_handler  # type: ignore[assignment]
+
+        first_render_handled = False
+
+        def _after_first_render(_application: Application[None]) -> None:
+            nonlocal first_render_handled
+            if first_render_handled:
+                return
+            first_render_handled = True
+            if not self._mouse_enabled:
+                application.output.disable_mouse_support()
+            if initial_compose is not None and initial_compose.submit_when_ready:
+                self._submit_input(input_area.buffer.text.strip(), input_area)
+
+        application.after_render += _after_first_render
 
         # Run with error handling
         try:
             self._tui_running = True
-            await self._app.run_async()
+            await application.run_async()
         except Exception as e:
             # Re-raise to be caught by cli.py with proper error display
             raise RuntimeError(f"TUI crashed: {e}") from e
         finally:
+            application.after_render -= _after_first_render
             self._tui_running = False
             self._show_shutdown_status("leaving TUI")
             # Restore original prompt_toolkit exception handler
-            self._app._handle_exception = original_handle_exception  # type: ignore[assignment]
+            application._handle_exception = original_handle_exception  # type: ignore[assignment]
             # Foreground and managed task cleanup is owned by __aexit__. Keeping
             # it in one lifecycle boundary avoids paying each bounded wait twice.

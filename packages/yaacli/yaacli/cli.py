@@ -37,6 +37,10 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 logger = logging.getLogger(__name__)
 
 
+class SetupWizardRequired(RuntimeError):
+    """Raised when a background runtime child cannot own interactive setup."""
+
+
 # =============================================================================
 # Provider Environment Variable Mapping
 # =============================================================================
@@ -566,7 +570,11 @@ def _create_worktree(branch_name: str | None) -> tuple[Path, str, bool]:
 # =============================================================================
 
 
-def _prepare_cli_runtime(verbose: bool) -> tuple[ConfigManager, YaacliConfig]:
+def _prepare_cli_runtime(
+    verbose: bool,
+    *,
+    allow_setup_wizard: bool = True,
+) -> tuple[ConfigManager, YaacliConfig]:
     import_started_at = time.monotonic()
     from yaacli.config import ConfigManager
     from yaacli.logging import configure_logging
@@ -585,6 +593,8 @@ def _prepare_cli_runtime(verbose: bool) -> tuple[ConfigManager, YaacliConfig]:
     ensure_builtin_assets(config_manager)
     logger.info("Startup stage builtin-assets completed in %.3fs", time.monotonic() - assets_started_at)
     if not config.is_configured:
+        if not allow_setup_wizard:
+            raise SetupWizardRequired("Interactive setup requires direct terminal ownership")
         if not run_setup_wizard(config_manager):
             raise click.exceptions.Exit(0)
         config = config_manager.reload()
@@ -606,6 +616,68 @@ def _prepare_session_cli_runtime(verbose: bool) -> ConfigManager:
     if config.env:
         config_manager.reload()
     return config_manager
+
+
+def _report_fatal_error(error: BaseException, *, verbose: bool, headless_mode: bool) -> None:
+    """Render one consistent fatal diagnostic after either frontend exits."""
+    from yaacli.errors import safe_exception_str
+    from yaacli.logging import LOG_FILE_NAME
+
+    logger.exception("Fatal error")
+    click.echo(err=headless_mode)
+    click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
+    click.echo(click.style("FATAL ERROR", fg="red", bold=True), err=headless_mode)
+    click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
+    click.echo(err=headless_mode)
+    click.echo(f"Error type: {type(error).__name__}", err=headless_mode)
+    click.echo(f"Message: {safe_exception_str(error)}", err=headless_mode)
+    click.echo(err=headless_mode)
+    if verbose:
+        import traceback
+
+        click.echo(click.style("Traceback:", fg="yellow"), err=headless_mode)
+        click.echo(traceback.format_exc(), err=headless_mode)
+    else:
+        click.echo("Run with --verbose flag for full traceback.", err=headless_mode)
+    click.echo(err=headless_mode)
+    click.echo("Common issues:", err=headless_mode)
+    click.echo("  - API key not set or invalid", err=headless_mode)
+    click.echo("  - Network connectivity issues", err=headless_mode)
+    click.echo("  - Invalid model configuration", err=headless_mode)
+    click.echo(err=headless_mode)
+    click.echo(f"Check logs at: {LOG_FILE_NAME} (with --verbose flag)", err=headless_mode)
+
+
+def _show_resume_hints(
+    *,
+    completed_session_id: str | None,
+    worktree_dir: Path | None,
+    actual_branch: str | None,
+    headless_mode: bool,
+) -> None:
+    """Show durable session and worktree continuation commands."""
+    if completed_session_id or worktree_dir is not None:
+        click.echo(err=headless_mode)
+
+    if completed_session_id:
+        click.echo(click.style(f"Session: {completed_session_id}", fg="cyan", bold=True), err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To resume this session:", err=headless_mode)
+        if headless_mode:
+            click.echo(f"  yaacli -p '<prompt>' -s {completed_session_id}", err=True)
+        else:
+            click.echo(f"  yaacli --session {shlex.quote(completed_session_id)}")
+
+    if worktree_dir is not None:
+        click.echo(err=headless_mode)
+        click.echo(click.style("Worktree is still available:", fg="cyan", bold=True), err=headless_mode)
+        click.echo(f"  Directory: {worktree_dir}", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To resume in this worktree:", err=headless_mode)
+        click.echo(f"  yaacli -w -b {actual_branch}", err=headless_mode)
+        click.echo(err=headless_mode)
+        click.echo("To remove when done:", err=headless_mode)
+        click.echo(f"  git worktree remove {worktree_dir}", err=headless_mode)
 
 
 @click.group(invoke_without_command=True)
@@ -683,13 +755,54 @@ def cli(
     if worker and not headless_mode:
         raise click.UsageError("--worker requires --prompt/-p headless mode.")
 
+    if not headless_mode:
+        from yaacli.tui_startup import (
+            FastTUIRequest,
+            FastTUIRuntimeError,
+            FastTUISetupRequired,
+            can_use_fast_tui,
+            run_fast_tui,
+        )
+
+        if not worktree and worktree_branch is None and can_use_fast_tui(cwd=Path.cwd()):
+            try:
+                fast_result = run_fast_tui(
+                    FastTUIRequest(
+                        verbose=verbose,
+                        cwd=str(Path.cwd()),
+                        session_id=session_id,
+                        model_profile_id=effective_model_profile_id,
+                    )
+                )
+            except FastTUISetupRequired:
+                pass
+            except KeyboardInterrupt:
+                click.echo("\nGoodbye!")
+                raise click.exceptions.Exit(130) from None
+            except FastTUIRuntimeError as error:
+                _report_fatal_error(error, verbose=verbose, headless_mode=False)
+                if verbose and error.child_traceback:
+                    click.echo("Runtime child traceback:", err=True)
+                    click.echo(error.child_traceback, err=True)
+                raise click.exceptions.Exit(1) from None
+            except Exception as error:
+                _report_fatal_error(error, verbose=verbose, headless_mode=False)
+                raise click.exceptions.Exit(1) from None
+            else:
+                _show_resume_hints(
+                    completed_session_id=fast_result.session_id,
+                    worktree_dir=None,
+                    actual_branch=None,
+                    headless_mode=False,
+                )
+                return
+
     if headless_mode:
         with redirect_stdout(sys.stderr):
             config_manager, config = _prepare_cli_runtime(verbose)
     else:
         config_manager, config = _prepare_cli_runtime(verbose)
 
-    # Set up worktree if requested
     worktree_dir: Path | None = None
     actual_branch: str | None = None
     if worktree or worktree_branch is not None:
@@ -703,8 +816,6 @@ def cli(
         click.echo(err=headless_mode)
 
     working_dir = worktree_dir or Path.cwd()
-
-    # Run the selected frontend
     exit_code = 0
     completed_session_id: str | None = None
     try:
@@ -734,60 +845,16 @@ def cli(
     except KeyboardInterrupt:
         click.echo("\nGoodbye!", err=headless_mode)
         exit_code = 130
-    except Exception as e:
-        from yaacli.errors import safe_exception_str
-        from yaacli.logging import LOG_FILE_NAME
-
-        logger.exception("Fatal error")
-        click.echo(err=headless_mode)
-        click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
-        click.echo(click.style("FATAL ERROR", fg="red", bold=True), err=headless_mode)
-        click.echo(click.style("=" * 60, fg="red"), err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo(f"Error type: {type(e).__name__}", err=headless_mode)
-        click.echo(f"Message: {safe_exception_str(e)}", err=headless_mode)
-        click.echo(err=headless_mode)
-        # Show traceback in verbose mode or for unexpected errors
-        if verbose:
-            import traceback
-
-            click.echo(click.style("Traceback:", fg="yellow"), err=headless_mode)
-            click.echo(traceback.format_exc(), err=headless_mode)
-        else:
-            click.echo("Run with --verbose flag for full traceback.", err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo("Common issues:", err=headless_mode)
-        click.echo("  - API key not set or invalid", err=headless_mode)
-        click.echo("  - Network connectivity issues", err=headless_mode)
-        click.echo("  - Invalid model configuration", err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo(f"Check logs at: {LOG_FILE_NAME} (with --verbose flag)", err=headless_mode)
+    except Exception as error:
+        _report_fatal_error(error, verbose=verbose, headless_mode=headless_mode)
         exit_code = 1
 
-    # Show resume hints on exit
-    if completed_session_id or worktree_dir is not None:
-        click.echo(err=headless_mode)
-
-    if completed_session_id:
-        click.echo(click.style(f"Session: {completed_session_id}", fg="cyan", bold=True), err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo("To resume this session:", err=headless_mode)
-        if headless_mode:
-            click.echo(f"  yaacli -p '<prompt>' -s {completed_session_id}", err=True)
-        else:
-            click.echo(f"  yaacli --session {shlex.quote(completed_session_id)}")
-
-    if worktree_dir is not None:
-        click.echo(err=headless_mode)
-        click.echo(click.style("Worktree is still available:", fg="cyan", bold=True), err=headless_mode)
-        click.echo(f"  Directory: {worktree_dir}", err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo("To resume in this worktree:", err=headless_mode)
-        click.echo(f"  yaacli -w -b {actual_branch}", err=headless_mode)
-        click.echo(err=headless_mode)
-        click.echo("To remove when done:", err=headless_mode)
-        click.echo(f"  git worktree remove {worktree_dir}", err=headless_mode)
-
+    _show_resume_hints(
+        completed_session_id=completed_session_id,
+        worktree_dir=worktree_dir,
+        actual_branch=actual_branch,
+        headless_mode=headless_mode,
+    )
     sys.exit(exit_code)
 
 

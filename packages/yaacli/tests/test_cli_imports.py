@@ -34,6 +34,37 @@ assert not loaded, loaded
     )
 
 
+def test_fast_tui_shell_import_does_not_load_runtime_stack() -> None:
+    _run_isolated(
+        """
+import sys
+import yaacli.tui_startup
+
+blocked = {
+    "pydantic_ai",
+    "ya_agent_sdk.capabilities",
+    "yaacli.app.tui",
+    "yaacli.config",
+    "yaacli.durable.sqlite",
+}
+loaded = sorted(blocked.intersection(sys.modules))
+assert not loaded, loaded
+"""
+    )
+
+
+def test_lazy_app_exports_support_module_introspection() -> None:
+    _run_isolated(
+        """
+import yaacli.app
+
+assert "TUIApp" in dir(yaacli.app)
+from yaacli.app import TUIApp
+assert vars(yaacli.app)["TUIApp"] is TUIApp
+"""
+    )
+
+
 def test_help_and_version_do_not_load_runtime_stack() -> None:
     _run_isolated(
         """

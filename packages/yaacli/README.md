@@ -168,6 +168,8 @@ automatically selected for deletion. See
 
 ## TUI Interaction
 
+On a configured POSIX TTY, YAACLI immediately renders the canonical editable TUI layout while a cold child process initializes the agent runtime and durable session host. When the child is ready, terminal ownership transfers without leaving and re-entering the alternate screen. Draft text, cursor and selection, send/edit mode, mouse mode, and a locally queued Enter are preserved. A queued prompt is submitted only through the runtime TUI's ordinary durable acceptance path; startup never displays a false acknowledgement or moves initialization cost to the first request. First-time setup, worktree creation, unsupported terminals, non-TTY use, and headless mode retain direct startup.
+
 The output viewport has priority over auxiliary UI. The task pane is hidden when empty, uses one summary row by default, and expands with `F2`. The model selector is an overlay and does not permanently consume output rows.
 
 - Enter submits while idle and sends guidance to the active run while an agent is running.
