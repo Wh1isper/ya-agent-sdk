@@ -731,7 +731,7 @@ async def _run_child_main() -> int:
     child_task = asyncio.current_task()
     installed_signal_handlers: list[signal.Signals] = []
     if child_task is not None:
-        for child_signal in (signal.SIGHUP, signal.SIGTERM):
+        for child_signal in (signal.Signals(1), signal.SIGTERM):  # 1 is POSIX SIGHUP.
             with contextlib.suppress(NotImplementedError, RuntimeError):
                 loop.add_signal_handler(child_signal, child_task.cancel)
                 installed_signal_handlers.append(child_signal)
