@@ -79,9 +79,11 @@ The transcript is stored as bounded render blocks and exposed through a virtual 
   lossy replay projection. Successful runs keep their live segment; failed, cancelled,
   or interrupted runs replace only the active segment with the canonical terminal
   projection. Controlled exits preserve safe partial model text and observed tool-call
-  display records, including an invocation interrupted before its result. Canonical model
-  history remains governed separately by SDK recoverable-message rules, and unrelated
-  scrollback remains unchanged.
+  display records, including an invocation interrupted before its result. Cancellation
+  at a native segment/checkpoint boundary retains the complete live bounded projection
+  rather than rolling visible tool calls back to the preceding stable checkpoint.
+  Canonical model history remains governed separately by SDK recoverable-message rules,
+  and unrelated scrollback remains unchanged.
 - Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
 
 ## Task Pane
@@ -198,6 +200,7 @@ The UI uses one explicit foreground boundary covering agent, shell, save, comman
 - A second prompt or shell cannot race the first submission.
 - Busy-safe commands (`/cancel`, `/agents`, `/process`, `/cost`, `/help`, `/attachments`, `/paste-image`, `/remove-image`, and `/tool`) remain available without taking foreground ownership from the active task.
 - Repeated cancellation does not add another `Task.cancel()` request.
+- Durable-run cancellation interrupts both the worker and any TUI approval or structured-question waiter, so HITL cannot strand the foreground in `CANCELLING`.
 - A `/cancel` command never cancels its own dispatch task.
 - Non-agent slash commands use `COMMAND_RUNNING`, so Ctrl+C cancellation and Ctrl+D exit gating share the authoritative foreground state.
 - Persistence already in `SAVING` is allowed to finish and Ctrl+C cannot fall through to idle exit handling.

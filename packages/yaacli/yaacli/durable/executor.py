@@ -761,13 +761,16 @@ class LocalExecutionCoordinator:
         run: LogicalRunRecord,
         stable: Sequence[JsonValue],
     ) -> list[JsonValue]:
-        merged = list(stable)
+        projection = list(stable)
         if self.display_projection_provider is not None:
-            merged = _merge_durable_display_projection(
-                merged,
-                self.display_projection_provider(),
-            )
-        return self._with_durable_steering_projection(run, merged)
+            live = list(self.display_projection_provider())
+            if live:
+                # The provider is the complete bounded TUI projection, not a
+                # delta. Prefer it so cancellation between native segment
+                # checkpoints cannot roll visible tool calls back to the last
+                # stable checkpoint.
+                projection = live
+        return self._with_durable_steering_projection(run, projection)
 
     def _current_terminal_display_projection(self, run: LogicalRunRecord) -> list[JsonValue]:
         current = list(self.display_projection_provider()) if self.display_projection_provider is not None else []

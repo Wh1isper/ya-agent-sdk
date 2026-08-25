@@ -65,7 +65,7 @@ class DurableInboxPumpCapability(AbstractCapability[TUIContext]):
         store = runtime_bindings.get(binding_ref).store
         self._sync_applied_inputs(deps)
         if isinstance(result, End):
-            pending = store.close_and_list_inputs(logical_run_id)
+            pending = store.list_pending_inputs(logical_run_id)
         else:
             pending = store.list_inputs(
                 logical_run_id,

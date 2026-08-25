@@ -765,8 +765,8 @@ class SQLiteSessionStore:
                 INSERT INTO logical_runs(
                     logical_run_id, session_id, execution_id,
                     expected_head_revision_id, model, model_profile_id, idempotency_key,
-                    status, input_open, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     logical_run_id,
@@ -972,8 +972,6 @@ class SQLiteSessionStore:
                 UPDATE logical_runs
                 SET status = ?, pending_action_batch_id = ?,
                     cancellation_reason = COALESCE(?, cancellation_reason),
-                    input_open = CASE WHEN ? IN ('cancelling', 'completed', 'failed', 'cancelled', 'interrupted')
-                                      THEN 0 ELSE input_open END,
                     updated_at = ?
                 WHERE logical_run_id = ?
                 """,
@@ -981,7 +979,6 @@ class SQLiteSessionStore:
                     status.value,
                     pending_action_batch_id,
                     cancellation_reason,
-                    status.value,
                     _dt(now),
                     logical_run_id,
                 ),
@@ -1022,8 +1019,9 @@ class SQLiteSessionStore:
                 if record.content != normalized_content or record.priority is not priority or record.origin != origin:
                     raise ValueError("Input idempotency key was reused with different content")
                 return record
-            if not bool(run_row["input_open"]) or run.terminal or run.status is LogicalRunStatus.cancelling:
-                raise InvalidTransitionError(f"Logical run {logical_run_id!r} is not accepting input")
+            terminal_won = run.terminal or run.status is LogicalRunStatus.cancelling
+            input_state = InputState.rejected if terminal_won else InputState.accepted
+            rejection_reason = f"logical run is already {run.status.value}" if terminal_won else None
             next_order = cast(
                 int,
                 connection.execute(
@@ -1039,8 +1037,9 @@ class SQLiteSessionStore:
                 """
                 INSERT INTO run_inputs(
                     input_id, logical_run_id, order_index, idempotency_key,
-                    origin, priority, content_json, state, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    origin, priority, content_json, state, rejection_reason,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     input_id,
@@ -1050,7 +1049,8 @@ class SQLiteSessionStore:
                     origin,
                     priority.value,
                     _json(normalized_content),
-                    InputState.accepted.value,
+                    input_state.value,
+                    rejection_reason,
                     _dt(now),
                     _dt(now),
                 ),
@@ -1127,19 +1127,14 @@ class SQLiteSessionStore:
             )
             return self._input_from_row(self._required_row(connection, "run_inputs", "input_id", input_id))
 
-    def close_and_list_inputs(self, logical_run_id: str) -> tuple[InputRecord, ...]:
-        """Fence ingress and return unresolved input accepted before the fence."""
-        now = utc_now()
+    def list_pending_inputs(self, logical_run_id: str) -> tuple[InputRecord, ...]:
+        """Return the unresolved input snapshot at a serialized graph boundary."""
         with self._write() as connection:
             run_row = self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id)
             run = self._run_from_row(run_row)
             self._ensure_active_session(self._required_session(connection, run.session_id))
             if run.terminal or run.status is LogicalRunStatus.cancelling:
                 return ()
-            connection.execute(
-                "UPDATE logical_runs SET input_open = 0, updated_at = ? WHERE logical_run_id = ?",
-                (_dt(now), logical_run_id),
-            )
             rows = connection.execute(
                 """
                 SELECT * FROM run_inputs
@@ -1152,11 +1147,6 @@ class SQLiteSessionStore:
                     InputState.enqueued.value,
                 ),
             ).fetchall()
-            if rows:
-                connection.execute(
-                    "UPDATE logical_runs SET input_open = 1 WHERE logical_run_id = ?",
-                    (logical_run_id,),
-                )
             return tuple(self._input_from_row(row) for row in rows)
 
     def import_revision(
@@ -1211,8 +1201,8 @@ class SQLiteSessionStore:
                     INSERT INTO logical_runs(
                         logical_run_id, session_id, execution_id,
                         expected_head_revision_id, model, model_profile_id, idempotency_key,
-                        status, input_open, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                        status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         logical_run_id,
@@ -1404,7 +1394,7 @@ class SQLiteSessionStore:
                     connection.execute(
                         """
                         UPDATE logical_runs
-                        SET status = ?, input_open = 0, pending_action_batch_id = NULL,
+                        SET status = ?, pending_action_batch_id = NULL,
                             updated_at = ? WHERE logical_run_id = ?
                         """,
                         (terminal_status.value, _dt(now), logical_run_id),

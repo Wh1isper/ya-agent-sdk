@@ -12,6 +12,7 @@ from yaacli.durable.models import (
     ActionBatch,
     InputPriority,
     InputRecord,
+    InputState,
     LogicalRunRecord,
     RevisionPayload,
     RevisionRecord,
@@ -207,7 +208,7 @@ class SessionApplicationService:
         priority: InputPriority = InputPriority.asap,
         origin: str = "user",
     ) -> InputRecord:
-        """Durably accept active-run input before the caller acknowledges it."""
+        """Persist active-run input, including a terminal-winning rejected result."""
         return self.store.accept_input(
             logical_run_id,
             content,
@@ -235,7 +236,8 @@ class SessionApplicationService:
             priority=priority,
             origin=origin,
         )
-        self._require_coordinator().notify_input(logical_run_id)
+        if record.state is not InputState.rejected:
+            self._require_coordinator().notify_input(logical_run_id)
         return record
 
     def accept_action(

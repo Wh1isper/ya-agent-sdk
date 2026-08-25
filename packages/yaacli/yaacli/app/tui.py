@@ -2262,6 +2262,9 @@ class TUIApp:
         except Exception as exc:
             self._append_error_output(exc)
             return False
+        if record.state is InputState.rejected:
+            self._append_system_output("The active run already finished. Input was kept.")
+            return False
 
         # Durable acceptance is the user-visible receive boundary. Record it
         # only after persistence succeeds; EnqueuedMessagesEvent later records
@@ -2969,11 +2972,13 @@ class TUIApp:
         if self._active_logical_run_id is not None and self._session_service is not None:
             service = self._session_service
             try:
-                service.accept_input(
+                record = service.accept_input(
                     self._active_logical_run_id,
                     [prompt],
                     origin="feature",
                 )
+                if record.state is InputState.rejected:
+                    return
                 service.notify_input(self._active_logical_run_id)
             except Exception:
                 logger.debug(
@@ -5138,15 +5143,33 @@ class TUIApp:
         if self.phase == TUIPhase.SAVING:
             self._append_system_output("A durable commit is in progress; waiting for it to finish.")
             return
+        if self.phase == TUIPhase.CANCELLING:
+            self._append_system_output("Cancellation is already in progress.")
+            return
         if self._active_logical_run_id is not None and self._session_service is not None:
-            self._set_phase(TUIPhase.CANCELLING)
             logical_run_id = self._active_logical_run_id
             service = self._session_service
+            self._set_phase(TUIPhase.CANCELLING)
 
             async def cancel_run() -> None:
                 await service.cancel(logical_run_id, reason="user_interrupted")
 
             self._track_managed_task(asyncio.create_task(cancel_run()))
+
+            # The durable worker and the TUI interaction waiter are separate
+            # tasks. Interrupt the latter as well so a pending approval or
+            # structured question cannot keep the foreground alive while the
+            # worker is settling the cancelled revision.
+            current_task = asyncio.current_task()
+            agent_task = self._agent_task
+            if (
+                agent_task is not None
+                and agent_task is not current_task
+                and not agent_task.done()
+                and not agent_task.cancelling()
+            ):
+                agent_task.cancel()
+
             self._append_system_output("Cancelling durable agent run...")
             return
 

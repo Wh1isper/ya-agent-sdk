@@ -42,7 +42,11 @@ from pydantic_ai.messages import (
 from pydantic_ai.usage import RunUsage
 from ya_agent_environment.shell import BackgroundProcess
 from ya_agent_sdk.context import AvailableSkill, StreamEvent, TaskManager, TaskStatus
-from ya_agent_sdk.events import NamespaceStatus, NamespaceStatusEvent, TaskEvent
+from ya_agent_sdk.events import (
+    NamespaceStatus,
+    NamespaceStatusEvent,
+    TaskEvent,
+)
 from ya_agent_sdk.usage import CostEstimate
 
 # Import the components we're testing
@@ -68,7 +72,7 @@ from yaacli.config import (
     ToolsConfig,
     YaacliConfig,
 )
-from yaacli.durable.models import SessionStatus, SessionSummary
+from yaacli.durable.models import InputState, SessionStatus, SessionSummary
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 from yaacli.session import TUIContext
 from yaacli.theme import prompt_toolkit_style_rules
@@ -2712,6 +2716,57 @@ async def test_tui_app_hitl_cancellation_resumes_timer() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tui_app_cancel_interrupts_active_structured_question_once() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    service = MagicMock()
+    service.cancel = AsyncMock()
+    app._session_service = service
+    app._active_logical_run_id = "question-run"
+    deferred = DeferredToolRequests(
+        calls=[
+            ToolCallPart(
+                tool_name="ask_user_question",
+                args={
+                    "questions": [
+                        {
+                            "question": "How should this change be handled?",
+                            "header": "Change",
+                            "options": [
+                                {"label": "Include", "description": "Include it"},
+                                {"label": "Exclude", "description": "Leave it out"},
+                            ],
+                            "multiSelect": False,
+                        }
+                    ]
+                },
+                tool_call_id="question-cancel",
+            )
+        ]
+    )
+    app._set_phase(TUIPhase.THINKING)
+    question_task = asyncio.create_task(app._request_user_action(deferred))
+    app._agent_task = question_task
+    await asyncio.sleep(0)
+
+    assert app.phase == TUIPhase.AWAITING_APPROVAL
+    assert app._approval_event is not None
+
+    app._cancel_foreground()
+    app._cancel_foreground()
+
+    assert app.phase == TUIPhase.CANCELLING
+    assert question_task.cancelling() == 1
+    with pytest.raises(asyncio.CancelledError):
+        await question_task
+    await asyncio.sleep(0)
+
+    service.cancel.assert_awaited_once_with("question-run", reason="user_interrupted")
+    assert app._approval_event is None
+    assert sum("Cancelling durable agent run" in line for line in app._output_lines) == 1
+    assert any("Cancellation is already in progress" in line for line in app._output_lines)
+
+
+@pytest.mark.asyncio
 async def test_tui_app_empty_deferred_batch_does_not_pause_or_ring() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     app._app = MagicMock()
@@ -3349,6 +3404,25 @@ def test_tui_app_saving_phase_rejects_new_prompt() -> None:
     assert app._agent_task is None
     assert input_area.buffer.text == "do not race save"
     assert any("saving" in line.lower() for line in app._output_lines)
+
+
+def test_tui_app_terminal_last_write_preserves_rejected_steering_draft() -> None:
+    """A terminal write wins without raising or locking the session."""
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    input_area = TextArea(text="late guidance", multiline=True)
+    service = MagicMock()
+    service.accept_input.return_value = MagicMock(state=InputState.rejected)
+    app._session_service = service
+    app._active_logical_run_id = "run-1"
+    app._set_phase(TUIPhase.THINKING)
+    app._set_phase(TUIPhase.STREAMING_OUTPUT)
+
+    app._submit_input(input_area.text, input_area)
+
+    assert app.phase is TUIPhase.STREAMING_OUTPUT
+    assert input_area.buffer.text == "late guidance"
+    assert any("active run already finished" in line.lower() for line in app._output_lines)
+    assert not any("[ERROR]" in line for line in app._output_lines)
 
 
 @pytest.mark.asyncio
