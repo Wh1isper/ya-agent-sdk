@@ -1,11 +1,12 @@
 """Tests for canonical background-shell completion formatting."""
 
+import json
 from pathlib import PurePosixPath
 from unittest.mock import AsyncMock, MagicMock
 
 from ya_agent_environment import CompletedProcess, Shell
 from ya_agent_environment.shell import ExecutionHandle
-from ya_agent_sdk.filters.background_shell import consume_background_results
+from ya_agent_sdk.filters.background_shell import _INJECT_TRUNCATE_LIMIT, consume_background_results
 
 
 def _make_context(shell: Shell | None = None, file_operator=None) -> MagicMock:
@@ -140,9 +141,33 @@ async def test_large_output_retains_head_and_tail_and_writes_file() -> None:
     assert "truncated" in result.lower()
     assert "HEAD-" in result
     assert "-TAIL" in result
-    assert "full output" in result.lower()
+    assert "retained background results saved" in result
     assert "Full stdout:" in result
+    assert file_operator.write_file.await_count == 2
+
+
+async def test_aggregate_output_is_bounded_across_streams() -> None:
+    completed = CompletedProcess(
+        process_id="combined1",
+        command="combined output",
+        cwd=None,
+        exit_code=1,
+        stdout="STDOUT-" + "x" * 7000,
+        stderr="STDERR-" + "y" * 7000,
+        truncated=False,
+    )
+    file_operator = AsyncMock()
+    context = _make_context(MockShell(completed=[completed]), file_operator)
+
+    result = await consume_background_results(context)
+
+    assert result is not None
+    assert len(result) <= _INJECT_TRUNCATE_LIMIT
+    assert "retained background results saved" in result
     file_operator.write_file.assert_awaited_once()
+    saved = json.loads(file_operator.write_file.await_args.args[1])
+    assert saved["completed"][0]["stdout"].startswith("STDOUT-")
+    assert saved["completed"][0]["stderr"].startswith("STDERR-")
 
 
 async def test_source_capped_output_is_not_labeled_full() -> None:
@@ -161,7 +186,8 @@ async def test_source_capped_output_is_not_labeled_full() -> None:
     result = await consume_background_results(context)
 
     assert result is not None
-    assert "stored output" in result.lower()
+    assert "retained background results saved" in result
     assert "Stored stdout:" in result
     assert "shell_wait can retrieve the retained terminal output" in result
-    assert "full output" not in result.lower()
+    assert "Full stdout:" not in result
+    assert file_operator.write_file.await_count == 2

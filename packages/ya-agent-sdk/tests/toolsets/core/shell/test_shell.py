@@ -16,8 +16,9 @@ from ya_agent_sdk.toolsets.core.shell.shell import OUTPUT_TRUNCATE_LIMIT
 
 
 async def test_shell_tool_basic_attributes(agent_context: AgentContext) -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description, and output budget."""
     tool = ShellTool()
+    assert OUTPUT_TRUNCATE_LIMIT == 12_000
     assert tool.name == "shell_exec"
     assert "Execute" in tool.description
 
@@ -239,6 +240,82 @@ async def test_shell_wait_retains_boundaries_of_oversized_single_line(tmp_path: 
         assert waited["stdout"].startswith("HEAD-")
         assert waited["stdout"].endswith("-TAIL")
         assert "truncated" in waited["stdout"]
+
+
+async def test_shell_status_spills_oversized_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Oversized process summaries should use the shared bounded shell preview."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        assert ctx.shell is not None
+        summary = '<process command="' + "x" * (OUTPUT_TRUNCATE_LIMIT * 2) + '"/>'
+        monkeypatch.setattr(ctx.shell, "background_status_summary_with_retained_results", lambda: summary)
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        result = await ShellStatusTool().call(run_ctx)
+
+        assert isinstance(result, dict)
+        assert result["truncated"] is True
+        assert len(json.dumps(result, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT
+        assert Path(result["output_file_path"]).is_file()
+        assert json.loads(Path(result["output_file_path"]).read_text())["stdout"] == summary
+
+
+async def test_shell_wait_bounds_oversized_error_metadata(tmp_path: Path) -> None:
+    """Oversized process handles in error paths must not bypass the shell limit."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+        process_id = "x" * (OUTPUT_TRUNCATE_LIMIT + 1000)
+
+        result = await ShellWaitTool().call(run_ctx, process_id, timeout_seconds=0)
+
+        assert result["truncated"] is True
+        assert len(json.dumps(result, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT
+        output_path = Path(result["output_file_path"])
+        assert output_path.is_file()
+        full_result = json.loads(output_path.read_text())
+        assert full_result["process_id"] == process_id
+        assert process_id in full_result["error"]
+
+
+async def test_shell_wait_spills_oversized_result_to_tmp_files(tmp_path: Path) -> None:
+    """Oversized background results should return a bounded preview with full temp files."""
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        line = "HEAD-" + "x" * 250 + "-TAIL\n"
+        line_count = 100
+        started = await ShellTool().call(
+            run_ctx,
+            f'''python3 -c "import sys; sys.stdout.write({line!r} * {line_count})"''',
+            background=True,
+        )
+        waited = await ShellWaitTool().call(run_ctx, started["process_id"], timeout_seconds=5)
+
+        assert waited["return_code"] == 0
+        assert waited["truncated"] is True
+        assert len(json.dumps(waited, ensure_ascii=False)) <= OUTPUT_TRUNCATE_LIMIT
+
+        stdout_path = Path(waited["stdout_file_path"])
+        output_path = Path(waited["output_file_path"])
+        expected_stdout = (line * line_count).rstrip("\n")
+        assert stdout_path.is_file()
+        assert output_path.is_file()
+        assert stdout_path.read_text() == expected_stdout
+        assert json.loads(output_path.read_text())["stdout"] == expected_stdout
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")

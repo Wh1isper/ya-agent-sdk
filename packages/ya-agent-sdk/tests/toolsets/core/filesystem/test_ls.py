@@ -17,8 +17,10 @@ from ya_agent_sdk.toolsets.core.filesystem.ls import ListTool
 
 
 async def test_list_tool_attributes(agent_context: AgentContext) -> None:
-    """Should have correct name and description."""
+    """Should have correct name, description, and bounded defaults."""
     assert ListTool.name == "ls"
+    assert ls_module.DEFAULT_MAX_RESULTS == 100
+    assert ls_module.OUTPUT_TRUNCATE_LIMIT == 12_000
     assert "List directory" in ListTool.description
     tool = ListTool()
     mock_run_ctx = MagicMock(spec=RunContext)

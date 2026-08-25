@@ -15,7 +15,10 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.core._output import (
     DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    dump_tool_output,
+    fit_text_fields_to_limit,
     output_too_large_message,
+    tool_output_size,
     write_tmp_output,
 )
 from ya_agent_sdk.toolsets.core.base import BaseTool
@@ -76,6 +79,35 @@ def _response_total_length(response: httpx.Response, fallback: int) -> int:
     return fallback
 
 
+async def _guard_head_metadata(ctx: AgentContext, result: dict[str, Any]) -> dict[str, Any]:
+    """Spill oversized HEAD metadata and return a hard-bounded preview."""
+    if tool_output_size(result) <= CONTENT_PREVIEW_LIMIT:
+        return result
+
+    full_result = dump_tool_output(result)
+    output_path = await write_tmp_output(
+        ctx,
+        prefix="fetch-head",
+        content=full_result,
+        extension="json",
+    )
+    preview = dict(result)
+    preview["truncated"] = True
+    if output_path is not None:
+        preview["output_file_path"] = output_path
+    preview["tips"] = output_too_large_message(
+        size=len(full_result),
+        output_path=output_path,
+        noun="HEAD metadata",
+    )
+    return fit_text_fields_to_limit(
+        preview,
+        text_fields=("content_type", "content_length", "last_modified", "url", "error", "tips"),
+        limit=CONTENT_PREVIEW_LIMIT,
+        suffix="... (truncated)",
+    )
+
+
 def _build_truncated_text_response(
     *,
     text: str,
@@ -85,14 +117,19 @@ def _build_truncated_text_response(
 ) -> dict[str, Any]:
     total_length = _response_total_length(response, total_length)
     result: dict[str, Any] = {
-        "content": text + "\n\n... (truncated)",
+        "content": text,
         "truncated": True,
         "tips": output_too_large_message(size=total_length, output_path=output_path, noun="content"),
         "total_length": total_length,
     }
     if output_path is not None:
         result["output_file_path"] = output_path
-    return result
+    return fit_text_fields_to_limit(
+        result,
+        text_fields=("content",),
+        limit=CONTENT_PREVIEW_LIMIT,
+        suffix="\n\n... (truncated)",
+    )
 
 
 @cache
@@ -127,14 +164,20 @@ class FetchTool(BaseTool):
                 verify_url(url)
             except ForbiddenUrlError as e:
                 logger.warning(f"URL access forbidden: {url} - {e}")
-                return {"success": False, "error": f"URL access forbidden - {e}"}
+                result = {"success": False, "error": f"URL access forbidden - {e}"}
+                return await _guard_head_metadata(ctx.deps, result) if head_only else result
 
         if head_only:
-            return await self._head_request(url, skip_verification)
+            return await self._head_request(ctx.deps, url, skip_verification)
         else:
             return await self._get_request(ctx, url, skip_verification)
 
-    async def _head_request(self, url: str, skip_verification: bool = False) -> dict[str, Any]:
+    async def _head_request(
+        self,
+        ctx: AgentContext,
+        url: str,
+        skip_verification: bool = False,
+    ) -> dict[str, Any]:
         """Make HEAD request to check resource info."""
         try:
             response = await safe_request(url, method="HEAD", timeout=10.0, skip_verification=skip_verification)
@@ -143,7 +186,7 @@ class FetchTool(BaseTool):
             if response.status_code == 405:
                 response = await safe_request(url, method="GET", timeout=10.0, skip_verification=skip_verification)
 
-            return {
+            result = {
                 "exists": response.status_code < 400,
                 "accessible": response.status_code < 400,
                 "status_code": response.status_code,
@@ -153,19 +196,20 @@ class FetchTool(BaseTool):
                 "url": url,
             }
         except ForbiddenUrlError as e:
-            return {
+            result = {
                 "exists": False,
                 "accessible": False,
                 "error": f"URL forbidden: {e}",
                 "url": url,
             }
         except Exception as e:
-            return {
+            result = {
                 "exists": False,
                 "accessible": False,
                 "error": str(e),
                 "url": url,
             }
+        return await _guard_head_metadata(ctx, result)
 
     def _build_binary_size_error(self, max_bytes: int, size: int, *, downloaded: bool = False) -> dict[str, Any]:
         """Build a standardized error for oversized binary fetches."""

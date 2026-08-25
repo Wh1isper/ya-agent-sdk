@@ -268,6 +268,22 @@ same path below an existing shared mount so file operations and container comman
 the same path. Reusable containers therefore need no additional bind mount. Temporary
 storage is removed only after resources, shell, and file operator cleanup.
 
+## Bounded Core Tool Output
+
+Model-facing core tool results use bounded previews so one broad command or search does
+not dominate the conversation. Shell, `ls`, `grep`, `glob`, textual web reads, and web
+search use a 12,000-character serialized-result budget; oversized results retain a
+bounded preview and write the recoverable result to Environment temporary storage when
+available. The default result counts are 100 entries for `ls`, 50 matches for `grep`
+(10 per file), and 200 paths for `glob`. Explicit unlimited requests still pass through
+the final output guard.
+
+Text `view` defaults to 200 lines and a 16,000-character serialized-result budget.
+Relaxed context-document paths default to 500 lines, 4,000 characters per line, and a
+32,000-character serialized-result budget. When the budget is exhausted, `view` stops
+on a complete line and reports an accurate segment boundary for the next `line_offset`;
+the source file itself remains the recovery path.
+
 `FileOperator.read_bytes_stream()` returns an async iterator directly:
 
 ```python

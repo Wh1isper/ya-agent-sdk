@@ -1,5 +1,6 @@
 """Tests for ya_agent_sdk.toolsets.core.web.fetch module."""
 
+import json
 import os
 from contextlib import AsyncExitStack
 from io import BytesIO
@@ -11,6 +12,7 @@ from PIL import Image
 from pydantic_ai import BinaryContent, RunContext, ToolReturn
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
+from ya_agent_sdk.toolsets.core._output import tool_output_size
 from ya_agent_sdk.toolsets.core.web.fetch import CONTENT_PREVIEW_LIMIT, FetchTool
 
 
@@ -68,6 +70,36 @@ async def test_fetch_tool_head_only(tmp_path: Path, httpx2_mock) -> None:
         })
 
 
+async def test_fetch_tool_head_only_spills_oversized_metadata(tmp_path: Path, httpx2_mock) -> None:
+    """HEAD responses should spill oversized header metadata and stay bounded."""
+    last_modified = "x" * (CONTENT_PREVIEW_LIMIT * 2)
+    httpx2_mock.add_response(
+        url="https://example.com/large-metadata",
+        method="HEAD",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Last-Modified": last_modified,
+        },
+    )
+
+    async with AsyncExitStack() as stack:
+        env = await stack.enter_async_context(
+            LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path)
+        )
+        ctx = await stack.enter_async_context(AgentContext(env=env))
+        run_ctx = MagicMock(spec=RunContext)
+        run_ctx.deps = ctx
+
+        result = await FetchTool().call(run_ctx, url="https://example.com/large-metadata", head_only=True)
+
+        assert isinstance(result, dict)
+        assert result["truncated"] is True
+        assert tool_output_size(result) <= CONTENT_PREVIEW_LIMIT
+        output_path = Path(result["output_file_path"])
+        assert output_path.is_file()
+        assert json.loads(output_path.read_text())["last_modified"] == last_modified
+
+
 async def test_fetch_tool_get_text(tmp_path: Path, httpx2_mock) -> None:
     """Should return text content."""
     httpx2_mock.add_response(
@@ -113,7 +145,7 @@ async def test_fetch_tool_spills_long_text_to_tmp(tmp_path: Path, httpx2_mock) -
         assert isinstance(result, dict)
         assert result["truncated"] is True
         assert "output_file_path" in result
-        assert len(result["content"]) <= CONTENT_PREVIEW_LIMIT + 20
+        assert tool_output_size(result) <= CONTENT_PREVIEW_LIMIT
         assert Path(result["output_file_path"]).read_text() == long_text
 
 

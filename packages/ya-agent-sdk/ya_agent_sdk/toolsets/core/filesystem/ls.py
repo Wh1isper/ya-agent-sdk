@@ -13,7 +13,11 @@ from ya_agent_environment import FileOperator
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
-from ya_agent_sdk.toolsets.core._output import fit_text_fields_to_limit, write_tmp_output
+from ya_agent_sdk.toolsets.core._output import (
+    DEFAULT_OUTPUT_TRUNCATE_LIMIT,
+    fit_text_fields_to_limit,
+    write_tmp_output,
+)
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._search import SKILL_DOCUMENT_REMINDER, contains_skill_document
 from ya_agent_sdk.toolsets.core.filesystem._types import FileInfoWithStats
@@ -21,9 +25,9 @@ from ya_agent_sdk.toolsets.core.filesystem._types import FileInfoWithStats
 logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
-DEFAULT_MAX_RESULTS = 1000
+DEFAULT_MAX_RESULTS = 100
 _METADATA_CONCURRENCY_LIMIT = 32
-OUTPUT_TRUNCATE_LIMIT = 20000
+OUTPUT_TRUNCATE_LIMIT = DEFAULT_OUTPUT_TRUNCATE_LIMIT
 
 
 def _child_path(parent_path: str, name: str) -> str:

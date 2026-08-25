@@ -18,6 +18,7 @@ from ya_agent_environment import FileOperator
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.context.agent import MediaToUrlHook
+from ya_agent_sdk.toolsets.core._output import tool_output_size
 from ya_agent_sdk.toolsets.core.base import BaseTool
 from ya_agent_sdk.toolsets.core.filesystem._search import match_glob
 from ya_agent_sdk.toolsets.core.filesystem._types import (
@@ -38,6 +39,8 @@ from ya_agent_sdk.utils import (
 logger = get_logger(__name__)
 
 _PROMPTS_DIR = Path(__file__).parent / "prompts"
+DEFAULT_LINE_LIMIT = 200
+DEFAULT_MAX_LINE_LENGTH = 2000
 
 # Image file extensions that can be displayed as BinaryContent
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".webp"})
@@ -682,7 +685,7 @@ class ViewTool(BaseTool):
             "system": "Increase the `line_limit` and `max_line_length` if you need more context.",
         }
 
-    async def _read_text_file(
+    async def _read_text_file(  # noqa: C901
         self,
         ctx: RunContext[AgentContext],
         file_operator: FileOperator,
@@ -710,9 +713,9 @@ class ViewTool(BaseTool):
             if relaxed_limits
             else ctx.deps.tool_config.view_max_text_file_size
         )
-        if relaxed_limits and line_limit == 300:
+        if relaxed_limits and line_limit == DEFAULT_LINE_LIMIT:
             line_limit = ctx.deps.tool_config.view_relaxed_line_limit
-        if relaxed_limits and max_line_length == 2000:
+        if relaxed_limits and max_line_length == DEFAULT_MAX_LINE_LENGTH:
             max_line_length = ctx.deps.tool_config.view_relaxed_max_line_length
         max_content_chars = (
             ctx.deps.tool_config.view_relaxed_max_content_chars
@@ -745,25 +748,103 @@ class ViewTool(BaseTool):
         has_offset = start_index > 0
         selected_lines = all_lines[start_index : start_index + line_limit]
         has_line_limit = len(all_lines[start_index:]) > line_limit
-        lines_truncated = False
-        content_truncated = False
         processed_lines: list[str] = []
+        line_was_truncated: list[bool] = []
 
         for line in selected_lines:
-            if len(line) > max_line_length:
+            was_truncated = len(line) > max_line_length
+            if was_truncated:
                 line = line[:max_line_length] + "... (line truncated)\n"
-                lines_truncated = True
             processed_lines.append(line)
+            line_was_truncated.append(was_truncated)
 
-        content = "".join(processed_lines)
-        if len(content) > max_content_chars:
-            content = content[:max_content_chars] + "\n... (content truncated)"
-            content_truncated = True
+        complete_content = "".join(processed_lines)
+        all_selected_fit = tool_output_size(complete_content) <= max_content_chars
+        if not has_offset and not has_line_limit and not any(line_was_truncated) and all_selected_fit:
+            return complete_content
 
-        line_offset = start_index
-        needs_metadata = has_offset or has_line_limit or lines_truncated or content_truncated
-        if not needs_metadata:
-            return content
+        # Fit complete lines against the final serialized response budget. This keeps
+        # current_segment/end_line accurate so the next line_offset never skips text.
+        fitted_lines: list[str] = []
+        fitted_line_flags: list[bool] = []
+        content_truncated = False
+        for line, was_truncated in zip(processed_lines, line_was_truncated, strict=True):
+            candidate_lines = [*fitted_lines, line]
+            candidate_flags = [*fitted_line_flags, was_truncated]
+            candidate = self._build_text_metadata_response(
+                file_path=file_path,
+                content="".join(candidate_lines),
+                total_lines=total_lines,
+                total_chars=total_chars,
+                file_size=file_size,
+                line_offset=start_index,
+                line_limit=line_limit,
+                has_offset=has_offset,
+                lines_truncated=any(candidate_flags),
+                content_truncated=False,
+                max_line_length=max_line_length,
+                actual_lines_read=len(candidate_lines),
+            )
+            if tool_output_size(candidate) > max_content_chars:
+                content_truncated = True
+                break
+            fitted_lines = candidate_lines
+            fitted_line_flags = candidate_flags
+
+        if content_truncated and not fitted_lines and processed_lines:
+            # Extremely small custom budgets may not fit one configured-length line.
+            # Shorten that line further so pagination still advances by exactly one line.
+            line = processed_lines[0]
+            marker = "... (line truncated to fit output budget)\n"
+            low = 0
+            high = len(line)
+            fitted_first_line: dict[str, Any] | None = None
+            while low <= high:
+                midpoint = (low + high) // 2
+                candidate = self._build_text_metadata_response(
+                    file_path=file_path,
+                    content=line[:midpoint] + marker,
+                    total_lines=total_lines,
+                    total_chars=total_chars,
+                    file_size=file_size,
+                    line_offset=start_index,
+                    line_limit=line_limit,
+                    has_offset=has_offset,
+                    lines_truncated=True,
+                    content_truncated=True,
+                    max_line_length=max_line_length,
+                    actual_lines_read=1,
+                )
+                if tool_output_size(candidate) <= max_content_chars:
+                    fitted_first_line = candidate
+                    low = midpoint + 1
+                else:
+                    high = midpoint - 1
+            if fitted_first_line is not None:
+                return fitted_first_line
+            error = "View output budget is too small for pagination; increase view_max_content_chars."
+            return error[:max_content_chars]
+
+        content = "".join(fitted_lines)
+        if content_truncated:
+            marker = "\n... (content truncated; continue with the next line_offset)"
+            marked_content = content + marker
+            marked = self._build_text_metadata_response(
+                file_path=file_path,
+                content=marked_content,
+                total_lines=total_lines,
+                total_chars=total_chars,
+                file_size=file_size,
+                line_offset=start_index,
+                line_limit=line_limit,
+                has_offset=has_offset,
+                lines_truncated=any(fitted_line_flags),
+                content_truncated=True,
+                max_line_length=max_line_length,
+                actual_lines_read=len(fitted_lines),
+            )
+            if tool_output_size(marked) <= max_content_chars:
+                content = marked_content
 
         return self._build_text_metadata_response(
             file_path=file_path,
@@ -771,13 +852,13 @@ class ViewTool(BaseTool):
             total_lines=total_lines,
             total_chars=total_chars,
             file_size=file_size,
-            line_offset=line_offset,
+            line_offset=start_index,
             line_limit=line_limit,
             has_offset=has_offset,
-            lines_truncated=lines_truncated,
+            lines_truncated=any(fitted_line_flags),
             content_truncated=content_truncated,
             max_line_length=max_line_length,
-            actual_lines_read=len(processed_lines),
+            actual_lines_read=len(fitted_lines),
         )
 
     # --- Main entry point ---
@@ -799,17 +880,19 @@ class ViewTool(BaseTool):
         line_limit: Annotated[
             int,
             Field(
-                description="Maximum number of lines to read (default: 300)",
-                default=300,
+                description=f"Maximum number of lines to read (default: {DEFAULT_LINE_LIMIT})",
+                default=DEFAULT_LINE_LIMIT,
+                ge=1,
             ),
-        ] = 300,
+        ] = DEFAULT_LINE_LIMIT,
         max_line_length: Annotated[
             int,
             Field(
                 description="Maximum length of each line before truncation",
-                default=2000,
+                default=DEFAULT_MAX_LINE_LENGTH,
+                ge=1,
             ),
-        ] = 2000,
+        ] = DEFAULT_MAX_LINE_LENGTH,
         instructions: Annotated[
             str | None,
             Field(
@@ -824,6 +907,11 @@ class ViewTool(BaseTool):
     ) -> str | dict[str, Any] | ToolReturn:
         """Read a file from the filesystem."""
         file_operator = cast(FileOperator, ctx.deps.file_operator)
+
+        if line_limit < 1:
+            return "Error: line_limit must be at least 1."
+        if max_line_length < 1:
+            return "Error: max_line_length must be at least 1."
 
         if not await file_operator.exists(file_path):
             return f"Error: File not found: {file_path}"
