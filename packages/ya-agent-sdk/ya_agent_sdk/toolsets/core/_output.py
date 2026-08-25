@@ -54,7 +54,8 @@ async def write_tmp_output(
         if file_operator is None or context.tmp_dir is None:
             return None
         output_path = str(context.resolve_tmp_path(filename))
-        await file_operator.write_file(output_path, content)
+        payload = content.encode("utf-8") if isinstance(content, str) else content
+        await file_operator.write_file(output_path, payload)
         return output_path
     except Exception:
         logger.warning("Failed to write %s output to temp file", prefix, exc_info=True)
