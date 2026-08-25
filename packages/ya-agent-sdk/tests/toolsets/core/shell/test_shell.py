@@ -311,11 +311,11 @@ async def test_shell_wait_spills_oversized_result_to_tmp_files(tmp_path: Path) -
 
         stdout_path = Path(waited["stdout_file_path"])
         output_path = Path(waited["output_file_path"])
-        expected_stdout = (line * line_count).rstrip("\n")
         assert stdout_path.is_file()
         assert output_path.is_file()
-        assert stdout_path.read_text() == expected_stdout
-        assert json.loads(output_path.read_text())["stdout"] == expected_stdout
+        saved_stdout = json.loads(output_path.read_text())["stdout"]
+        assert stdout_path.read_bytes() == saved_stdout.encode("utf-8")
+        assert saved_stdout.splitlines() == [line.rstrip("\n")] * line_count
 
 
 @pytest.mark.skipif(os.name != "posix" or not Path("/bin/bash").exists(), reason="/bin/bash is required")

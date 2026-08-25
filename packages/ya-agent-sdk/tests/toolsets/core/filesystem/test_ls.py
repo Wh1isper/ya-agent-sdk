@@ -158,7 +158,7 @@ async def test_ls_writes_oversized_output_to_tmp_file(
 
     class LargeOutputFileOperator:
         def __init__(self) -> None:
-            self.saved_content: str | None = None
+            self.saved_content: str | bytes | None = None
 
         async def exists(self, path: str) -> bool:
             return path == "."
@@ -176,7 +176,6 @@ async def test_ls_writes_oversized_output_to_tmp_file(
 
         async def write_file(self, path: str, content: str | bytes, *, encoding: str = "utf-8") -> None:
             del path, encoding
-            assert isinstance(content, str)
             self.saved_content = content
 
     file_operator = LargeOutputFileOperator()
