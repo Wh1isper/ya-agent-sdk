@@ -48,6 +48,10 @@ class FastTUISetupRequired(RuntimeError):
     """Signal that the ordinary setup wizard must own the terminal."""
 
 
+class FastTUIUserCancelled(RuntimeError):
+    """Internal cancellation signal translated at the synchronous CLI boundary."""
+
+
 class FastTUIRuntimeError(RuntimeError):
     """Runtime-child failure with an optional remote traceback."""
 
@@ -414,7 +418,7 @@ async def _run_parent_shell(
             with contextlib.suppress(OSError):
                 await channel.send({"type": "cancel"})
             await _graceful_cancel_process(process)
-            raise KeyboardInterrupt
+            raise FastTUIUserCancelled
 
         if monitor_task is not None:
             await monitor_task
@@ -577,7 +581,10 @@ def run_fast_tui(request: FastTUIRequest) -> FastTUIResult:
 
         channel = _JsonSocket(parent_socket)
         output = create_leased_output(enter=True, leave=False)
-        return asyncio.run(_run_parent_shell(request, process, channel, output))
+        try:
+            return asyncio.run(_run_parent_shell(request, process, channel, output))
+        except FastTUIUserCancelled:
+            raise KeyboardInterrupt from None
     finally:
         if child_socket is not None:
             child_socket.close()

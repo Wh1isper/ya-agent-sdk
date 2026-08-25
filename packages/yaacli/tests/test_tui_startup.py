@@ -26,6 +26,7 @@ from yaacli.tui_startup import (
     FastTUIRequest,
     FastTUIResult,
     FastTUISetupRequired,
+    FastTUIUserCancelled,
     _JsonSocket,
     _run_child_session,
     _run_parent_shell,
@@ -211,7 +212,7 @@ async def test_parent_cancel_does_not_wait_for_runtime_readiness(monkeypatch: py
     monkeypatch.setattr("yaacli.tui_startup._graceful_cancel_process", cancel_process)
     monkeypatch.setattr("yaacli.tui_startup._restore_alternate_screen", restore)
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(FastTUIUserCancelled):
         await asyncio.wait_for(
             _run_parent_shell(
                 FastTUIRequest(verbose=False, cwd=os.getcwd()),
