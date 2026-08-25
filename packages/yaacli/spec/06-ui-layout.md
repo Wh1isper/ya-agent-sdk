@@ -2,7 +2,37 @@
 
 ## Overview
 
-YAACLI uses one full-screen prompt_toolkit application. The output viewport is the primary surface; auxiliary UI is bounded, hidden when unused, or rendered as an overlay.
+YAACLI presents one continuous full-screen prompt_toolkit surface. At any instant, exactly one process owns terminal input and rendering. The output viewport is the primary surface; auxiliary UI is bounded, hidden when unused, or rendered as an overlay.
+
+## Startup and Terminal Ownership
+
+On a configured POSIX TTY, interactive startup separates the lightweight frontend from cold runtime initialization:
+
+```mermaid
+sequenceDiagram
+    participant Terminal
+    participant Parent as Lightweight parent shell
+    participant Child as Cold runtime child
+
+    Parent->>Terminal: Enter alternate screen and render canonical layout
+    Parent->>Child: Start runtime initialization over private socketpair
+    Terminal->>Parent: Edit draft while runtime initializes
+    Child->>Parent: Runtime and durable host ready
+    Parent->>Child: Draft, cursor, selection, modes, and queued-submit intent
+    Parent-->>Terminal: Release raw input without leaving alternate screen
+    Child->>Parent: Acknowledge terminal lease acquisition
+    Child->>Terminal: Render canonical runtime layout without re-entering alternate screen
+    Child->>Terminal: Leave alternate screen once at final exit
+    Child->>Parent: Confirm terminal lease release
+```
+
+Both phases use `build_tui_shell()` as the canonical layout constructor. The parent imports no agent runtime and owns only transient compose state. The child performs configuration, runtime construction, durable store initialization, session restoration, and optional one-run model selection before announcing readiness. A submitted startup draft remains visibly queued but is not acknowledged or cleared by the parent. After handoff, the child paints the runtime layout and schedules the draft through the ordinary submission path; durable acceptance remains the only boundary that may clear it or display a receipt.
+
+The handoff snapshot is bounded JSON and contains the draft text, cursor, selection, send/edit mode, mouse mode, and queued-submit intent. The private protocol validates all fields and limits each message to 1 MiB. Runtime bootstrap stdout and stderr are suppressed until the child owns the terminal, preventing imports or dependency diagnostics from corrupting the shell.
+
+Alternate-screen ownership is a lease: the parent enters without leaving, and the child leaves without entering. The private socket remains the child runtime's parent-liveness lease after handoff; parent EOF or an explicit cancel interrupts the runtime and runs bounded application cleanup. Cancellation or startup failure before handoff terminates the child with the same cleanup budget and makes the parent restore the terminal. Once ready, terminal ownership moves only after the parent application has released raw input. Lease acquisition and release are acknowledged explicitly, so recovery never restores the parent screen while the child can still render. There is no period in which both applications read the TTY.
+
+The fast path is limited to POSIX interactive terminals with a non-dumb `TERM`, an existing project or user config file, and no worktree-creation request. First-time setup, worktree creation, non-TTY invocation, unsupported terminals, and non-POSIX platforms retain direct startup so setup, worktree reporting, or the ordinary frontend has sole terminal ownership. Headless mode and session subcommands never use the shell handoff.
 
 ## Layout Structure
 
