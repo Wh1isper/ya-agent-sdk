@@ -673,6 +673,7 @@ class TUIApp:
 
     # Shutdown visibility
     _shutdown_status: str | None = field(default=None, init=False)
+    _shutdown_requested: bool = field(default=False, init=False)
     _tui_running: bool = field(default=False, init=False)
 
     # Streaming text tracking for markdown rendering
@@ -874,15 +875,23 @@ class TUIApp:
         )
 
     def _show_shutdown_status(self, message: str) -> None:
-        """Show shutdown progress in the TUI, with stderr fallback after it exits."""
+        """Show shutdown progress while the TUI owns the terminal and always log it."""
         self._shutdown_status = message
         logger.info("Shutdown: %s", message)
 
         if self._app is not None and self._tui_running:
             self._app.invalidate()
-            return
 
-        print(f"Shutdown: {message}", file=sys.stderr, flush=True)
+    def _request_exit(self, application: Application[Any]) -> None:
+        """Close notification ingress before releasing the terminal."""
+        if self._shutdown_requested:
+            return
+        self._shutdown_requested = True
+        shell_monitor = self._get_shell_monitor()
+        if shell_monitor is not None:
+            shell_monitor.set_notification_callback(None)
+        self._show_shutdown_status("exit requested")
+        application.exit()
 
     def _on_agent_task_shutdown_done(self, task: asyncio.Future[None]) -> None:
         """Release a timed-out agent task after cancellation eventually completes."""
@@ -1181,6 +1190,7 @@ class TUIApp:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Cleanup resources once after the prompt-toolkit run loop has stopped."""
+        self._shutdown_requested = True
         self._show_shutdown_status("starting shutdown")
         shell_monitor = self._get_shell_monitor()
         if shell_monitor is not None:
@@ -1271,8 +1281,8 @@ class TUIApp:
     # =========================================================================
 
     def _emit_terminal_bell(self, *, failure_context: str) -> None:
-        """Send a terminal BEL without prompt_toolkit's global bell suppression."""
-        if self._app is None:
+        """Send a terminal BEL only while the TUI still owns the terminal."""
+        if self._app is None or not self._tui_running or self._shutdown_requested:
             return
 
         try:
@@ -2948,7 +2958,7 @@ class TUIApp:
 
     def _on_shell_notification(self, notification: ShellNotification) -> None:
         """Expose shell readiness in the UI and route it through durable input."""
-        if self._session_clear_in_progress:
+        if self._session_clear_in_progress or self._shutdown_requested:
             return
         if notification.kind == "output":
             self._append_system_output(f"Background shell output ready: {notification.process_id}")
@@ -2959,7 +2969,7 @@ class TUIApp:
     def _route_pending_shell_notifications(self) -> None:
         """Persist shell readiness into an active run or start one idle turn."""
         monitor = self._get_shell_monitor()
-        if monitor is None or self._session_clear_in_progress:
+        if monitor is None or self._session_clear_in_progress or self._shutdown_requested:
             return
         current_delivery = self._shell_notification_task
         if current_delivery is not None and not current_delivery.done():
@@ -4907,8 +4917,7 @@ class TUIApp:
 
             # Idle: double-press to exit, single-press to clear input
             if current_time - self._last_ctrl_c_time < self._ctrl_c_exit_timeout:
-                self._show_shutdown_status("exit requested")
-                event.app.exit()
+                self._request_exit(event.app)
             else:
                 self._append_output("[Press Ctrl+C again to exit, or Ctrl+D to exit immediately]")
                 self._last_ctrl_c_time = current_time
@@ -4924,8 +4933,7 @@ class TUIApp:
             if input_area.buffer.text or self._pending_attachments:
                 self._append_system_output("A draft or attachments exist. Clear them before exiting.")
                 return
-            self._show_shutdown_status("exit requested")
-            event.app.exit()
+            self._request_exit(event.app)
 
         # Scroll functions
         def _scroll_up(event: KeyPressEvent) -> None:
@@ -5361,8 +5369,7 @@ class TUIApp:
             case "/exit":
                 self._append_user_input(command)
                 if self._app:
-                    self._show_shutdown_status("exit requested")
-                    self._app.exit()
+                    self._request_exit(self._app)
             case "/model":
                 self._append_user_input(command)
                 await self._show_model_selector()
@@ -6169,6 +6176,7 @@ class TUIApp:
 
         # Run with error handling
         try:
+            self._shutdown_requested = False
             self._tui_running = True
             await application.run_async()
         except Exception as e:

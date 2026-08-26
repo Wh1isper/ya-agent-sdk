@@ -234,11 +234,10 @@ Terminal size changes enter a short resize period. Repeated changes replace one 
 
 For `auto`, YAACLI resolves terminal background in this order:
 
-1. short OSC 11 query in recognized local terminals;
-2. `COLORFGBG`;
-3. dark fallback.
+1. passive `COLORFGBG` terminal metadata;
+2. dark fallback.
 
-OSC queries are skipped over SSH. The resolved theme supplies both Rich syntax highlighting and prompt_toolkit style rules.
+YAACLI does not send active color queries. Terminal response protocols have no cancellation boundary, so a response arriving after a bounded query timeout could leak into the TUI compose buffer or the parent shell after exit. The resolved theme supplies both Rich syntax highlighting and prompt_toolkit style rules.
 
 ## Verification
 
