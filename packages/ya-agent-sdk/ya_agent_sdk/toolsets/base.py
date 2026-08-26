@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Protocol, TypeAlias, runtime_checkable
 
 from pydantic import BaseModel
@@ -24,6 +25,13 @@ if TYPE_CHECKING:
 
 AgentDepsT = TypeVar("AgentDepsT", bound=AgentContext, default=AgentContext, contravariant=True)
 ToolCallDynamic: TypeAlias = Any
+
+TOOL_TAGS_METADATA_KEY = "ya_agent_sdk_tags"
+TOOL_SUPERSEDED_BY_TAGS_METADATA_KEY = "ya_agent_sdk_superseded_by_tags"
+ACTIVE_TOOL_SUPERSESSION_TAGS: ContextVar[frozenset[str]] = ContextVar(
+    "ya_agent_sdk_active_tool_supersession_tags",
+    default=frozenset(),
+)
 
 
 class UserInputPreprocessResult(BaseModel):

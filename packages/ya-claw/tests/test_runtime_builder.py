@@ -14,6 +14,7 @@ from ya_agent_sdk.capabilities import (
     FilesystemCapability,
     ShellCapability,
     SkillsCapability,
+    ToolSupersessionCapability,
     build_default_capability_catalog,
 )
 from ya_agent_sdk.environment import VirtualMount
@@ -185,6 +186,7 @@ async def test_runtime_builder_streams_with_test_model_and_native_agent_spec(tmp
     assert seen_events
     assert FilesystemCapability in root_capability_types
     assert SkillsCapability in resolved_capability_types
+    assert ToolSupersessionCapability in resolved_capability_types
     assert runtime.ctx.session_id == "session-1"
     assert runtime.ctx.claw_run_id == "run-1"
     assert exported_state is not None

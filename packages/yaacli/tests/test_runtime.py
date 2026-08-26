@@ -27,6 +27,7 @@ from ya_agent_sdk.capabilities import (
     ThinkingCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     UserInteractionCapability,
     build_default_capability_catalog,
@@ -139,12 +140,14 @@ async def test_runtime_executes_native_pydantic_ai_agent_without_stream_wrapper(
     tmp_path: Path,
 ) -> None:
     captured_instructions: list[str | None] = []
+    captured_tool_names: set[str] = set()
 
     def respond(
         _messages: list[ModelMessage],
         info: AgentInfo,
     ) -> ModelResponse:
         captured_instructions.append(info.instructions)
+        captured_tool_names.update(tool.name for tool in info.function_tools)
         return ModelResponse(parts=[TextPart(content="ok")])
 
     runtime = create_tui_runtime(
@@ -159,10 +162,15 @@ async def test_runtime_executes_native_pydantic_ai_agent_without_stream_wrapper(
     async with runtime:
         with runtime.agent.override(model=FunctionModel(respond)):
             result = await runtime.agent.run("test", deps=runtime.ctx)
+        has_supersession = any(isinstance(item, ToolSupersessionCapability) for item in runtime.capabilities)
 
     assert result.output == "ok"
     assert len(captured_instructions) == 1
     assert "Use the selected profile." in (captured_instructions[0] or "")
+    assert {"delete", "move", "copy", "mkdir"}.isdisjoint(captured_tool_names)
+    assert {"shell_exec", "glob", "grep", "ls", "view"} <= captured_tool_names
+    assert '<tool-instruction name="delete">' not in (captured_instructions[0] or "")
+    assert has_supersession is True
 
 
 @pytest.mark.asyncio
@@ -290,6 +298,31 @@ arguments = { label = "root" }
     assert root_plugins[0].label == "root"
     assert "test.host_plugin" in child_capability_names
     assert "test.host_plugin" not in self_capability_names
+
+
+@pytest.mark.asyncio
+async def test_child_manifest_and_runtime_share_exact_host_policy(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config = _config()
+    sources = compile_runtime_sources(config, config_dir=config_dir, include_subagents=True)
+    manifest = compile_child_plan_manifest(config, profile=None, sources=sources)
+
+    database_path = tmp_path / "sessions.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.close()
+    runtime = create_tui_runtime(
+        config=config,
+        working_dir=tmp_path,
+        config_dir=config_dir,
+        child_plan_manifest=manifest,
+        subagent_default_mode=SubagentExecutionMode.foreground,
+        durable_binding_ref="binding-1",
+        durable_database_path=database_path,
+    )
+
+    async with runtime:
+        assert runtime.agent is not None
 
 
 def test_markdown_subagent_inherits_active_model_settings_before_plan_snapshot(tmp_path: Path) -> None:

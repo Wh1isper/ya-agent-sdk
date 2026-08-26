@@ -134,12 +134,13 @@ instruction have the same owner.
 
 The SDK provides independent policy leaves:
 
-| Capability                  | Contract                                               |
-| --------------------------- | ------------------------------------------------------ |
-| `ToolVisibilityCapability`  | Final allow/deny and main-agent-only enforcement       |
-| `ToolApprovalCapability`    | Marks configured native tool definitions as unapproved |
-| `ToolObservationCapability` | Observes one logical call around timeout execution     |
-| `ToolTimeoutCapability`     | Bounds one validated execution attempt                 |
+| Capability                   | Contract                                                         |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `ToolSupersessionCapability` | Resolves `tags` / `superseded_by_tags` across assembled toolsets |
+| `ToolVisibilityCapability`   | Final allow/deny and main-agent-only enforcement                 |
+| `ToolApprovalCapability`     | Marks configured native tool definitions as unapproved           |
+| `ToolObservationCapability`  | Observes one logical call around timeout execution               |
+| `ToolTimeoutCapability`      | Bounds one validated execution attempt                           |
 
 Compose them explicitly and in semantic order:
 
@@ -147,17 +148,27 @@ Compose them explicitly and in semantic order:
 from ya_agent_sdk.capabilities import (
     ToolApprovalCapability,
     ToolObservationCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
 )
 
 policies = [
+    ToolSupersessionCapability(),
     ToolVisibilityCapability(deny=frozenset({"dangerous_tool"})),
     ToolApprovalCapability(tools=frozenset({"shell_exec", "write"})),
     ToolObservationCapability(),
     ToolTimeoutCapability(),
 ]
 ```
+
+`ToolSupersessionCapability` wraps the final assembled toolset. It collects tags from
+available definitions carrying the namespaced SDK supersession metadata, removes tools
+whose `superseded_by_tags` intersect that set, and applies the same run-step snapshot to
+tool-owned instructions. SDK `BaseTool` adapters project this metadata automatically;
+native tool definitions may opt in by setting the same namespaced keys. Definitions
+without it remain unchanged. Compose the capability explicitly in every host or child
+policy template that should use this behavior.
 
 Pydantic AI resolves the ordering declarations. Duplicate singleton capabilities fail
 runtime entry instead of silently selecting one. The generic timeout ceiling defaults

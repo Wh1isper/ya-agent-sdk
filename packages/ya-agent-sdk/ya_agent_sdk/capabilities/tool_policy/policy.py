@@ -7,7 +7,7 @@ import math
 import os
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Self
 
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.capabilities import (
@@ -18,10 +18,16 @@ from pydantic_ai.capabilities import (
 )
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets import AbstractToolset, WrapperToolset
 
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.capabilities.foundation.deferred import SupportsDeferredOutput
 from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.toolsets.base import (
+    ACTIVE_TOOL_SUPERSESSION_TAGS,
+    TOOL_SUPERSEDED_BY_TAGS_METADATA_KEY,
+    TOOL_TAGS_METADATA_KEY,
+)
 
 logger = get_logger(__name__)
 
@@ -40,6 +46,62 @@ def _default_tool_timeout_seconds() -> float:
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"{_TOOL_TIMEOUT_ENV_VAR} must be a positive finite number")
     return timeout
+
+
+def _tool_metadata_tags(tool_def: ToolDefinition, key: str) -> frozenset[str]:
+    """Read one SDK-owned string tag collection from a tool definition."""
+    value = (tool_def.metadata or {}).get(key)
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(tag for tag in value if isinstance(tag, str))
+
+
+@dataclass
+class _ToolSupersessionToolset(WrapperToolset[AgentContext]):
+    """Resolve SDK tool supersession after all capability toolsets are assembled."""
+
+    _active_tags: frozenset[str] | None = field(init=False, default=None, repr=False)
+
+    async def for_run(self, ctx: RunContext[AgentContext]) -> Self:
+        return type(self)(await self.wrapped.for_run(ctx))
+
+    async def for_run_step(self, ctx: RunContext[AgentContext]) -> Self:
+        return type(self)(await self.wrapped.for_run_step(ctx))
+
+    async def get_tools(self, ctx: RunContext[AgentContext]):
+        tools = await super().get_tools(ctx)
+        active_tags: set[str] = set()
+        for tool in tools.values():
+            active_tags.update(_tool_metadata_tags(tool.tool_def, TOOL_TAGS_METADATA_KEY))
+        self._active_tags = frozenset(active_tags)
+        ctx.deps.tool_tags = active_tags
+        return {
+            name: tool
+            for name, tool in tools.items()
+            if not (_tool_metadata_tags(tool.tool_def, TOOL_SUPERSEDED_BY_TAGS_METADATA_KEY) & active_tags)
+        }
+
+    async def get_instructions(self, ctx: RunContext[AgentContext]):
+        # Pydantic AI resolves tools before instructions for each run step. Reuse that
+        # exact availability snapshot instead of resolving dynamic toolsets twice.
+        token = ACTIVE_TOOL_SUPERSESSION_TAGS.set(self._active_tags or frozenset())
+        try:
+            return await super().get_instructions(ctx)
+        finally:
+            ACTIVE_TOOL_SUPERSESSION_TAGS.reset(token)
+
+
+@dataclass(kw_only=True)
+class ToolSupersessionCapability(AbstractCapability[AgentContext]):
+    """Hide SDK tools superseded by tags from any assembled capability toolset."""
+
+    id: str | None = "tool_supersession"
+
+    def get_wrapper_toolset(
+        self,
+        toolset: AbstractToolset[AgentContext],
+    ) -> AbstractToolset[AgentContext]:
+        return _ToolSupersessionToolset(toolset)
 
 
 @dataclass(kw_only=True)

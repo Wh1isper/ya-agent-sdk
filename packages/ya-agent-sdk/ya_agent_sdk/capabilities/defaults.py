@@ -34,6 +34,7 @@ from ya_agent_sdk.capabilities.presets import RuntimeFoundationCapability
 from ya_agent_sdk.capabilities.tool_policy import (
     ToolApprovalCapability,
     ToolObservationCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
 )
@@ -64,6 +65,7 @@ BUILTIN_CAPABILITY_TYPES = (
     ToolArgumentRepairCapability,
     ToolIdCompatibilityCapability,
     ToolObservationCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     ToolVisibilityCapability,
     UserInteractionCapability,
