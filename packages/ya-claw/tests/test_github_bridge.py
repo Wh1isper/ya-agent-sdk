@@ -282,8 +282,8 @@ async def test_github_adapter_rejects_stale_comment_actor_and_authenticated_acco
             stale.subject.latest_comment_url or "": {
                 "id": 504,
                 "body": "older allowed comment",
-                "created_at": "2026-08-26T07:59:30Z",
-                "updated_at": "2026-08-26T07:59:30Z",
+                "created_at": "2026-08-26T07:58:30Z",
+                "updated_at": "2026-08-26T07:58:30Z",
                 "user": {"login": "alice", "id": 1, "type": "User"},
             },
             own.subject.latest_comment_url or "": {
@@ -380,6 +380,48 @@ async def test_github_adapter_attributes_delayed_new_issue_mention_when_latest_c
                 "body": "@ya-claw-bot Can you see this?",
                 "created_at": "2026-08-26T13:47:08Z",
                 "updated_at": "2026-08-26T13:47:08Z",
+                "user": {"login": "Wh1isper", "id": 43375501, "type": "User"},
+            }
+        },
+        expected_mark_count=1,
+    )
+    handler = _RecordingHandler()
+    adapter = GitHubBridgeAdapter(
+        settings=ClawSettings(
+            api_token="test-token",  # noqa: S106
+            bridge_github_token="github-token",  # noqa: S106
+            bridge_github_allowed_senders="wh1isper",
+            bridge_github_poll_interval_seconds=300,
+            _env_file=None,
+        ),
+        handler=handler,
+        session_factory=create_session_factory(db_engine),
+        client=client,
+    )
+
+    task = asyncio.create_task(adapter.run())
+    await asyncio.wait_for(client.marked.wait(), timeout=5)
+    await adapter.stop()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert [message.sender_id for message in handler.messages] == ["Wh1isper"]
+
+
+async def test_github_adapter_attributes_delayed_latest_comment_sender(db_engine: AsyncEngine) -> None:
+    notification = _notification(
+        thread_id="25310933989",
+        reason="mention",
+        updated_at=datetime(2026, 8, 26, 15, 21, 3, tzinfo=UTC),
+    )
+    assert notification.subject.latest_comment_url is not None
+    client = _FakeGitHubClient(
+        notifications=[notification],
+        sources={
+            notification.subject.latest_comment_url: {
+                "id": 5427431414,
+                "body": "@ya-claw-bot hi",
+                "created_at": "2026-08-26T15:20:40Z",
+                "updated_at": "2026-08-26T15:20:40Z",
                 "user": {"login": "Wh1isper", "id": 43375501, "type": "User"},
             }
         },

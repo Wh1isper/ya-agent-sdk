@@ -199,7 +199,7 @@ class GitHubBridgeAdapter(BridgeAdapter):
                 return payload, source_sender_is_attributable(
                     notification,
                     payload,
-                    latest_comment=not _same_source_url(latest_comment_url, notification.subject.url),
+                    source_is_comment=not _same_source_url(latest_comment_url, notification.subject.url),
                 )
             except GitHubApiError as exc:
                 if exc.status_code not in {404, 410}:
@@ -211,7 +211,7 @@ class GitHubBridgeAdapter(BridgeAdapter):
         return payload, source_sender_is_attributable(
             notification,
             payload,
-            latest_comment=False,
+            source_is_comment=False,
         ) and latest_comment_url is None
 
     def _sender_allowed(self, sender: GitHubUser | None) -> bool:
