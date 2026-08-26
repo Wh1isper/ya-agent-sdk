@@ -2835,6 +2835,7 @@ async def test_tui_app_cancel_interrupts_active_structured_question_once() -> No
         await question_task
     await asyncio.sleep(0)
 
+    service.accept_cancel.assert_called_once_with("question-run", reason="user_interrupted")
     service.cancel.assert_awaited_once_with("question-run", reason="user_interrupted")
     assert app._approval_event is None
     assert sum("Cancelling durable agent run" in line for line in app._output_lines) == 1

@@ -583,7 +583,6 @@ class TUIApp:
     _active_display_run_id: str | None = field(default=None, init=False)
     _capture_active_run_blocks: bool = field(default=False, init=False, repr=False)
     _active_run_block_ids: set[BlockId] = field(default_factory=set, init=False, repr=False)
-    _active_run_tool_block_ids: set[BlockId] = field(default_factory=set, init=False, repr=False)
 
     # UI components
     _app: Application[None] | None = field(default=None, init=False, repr=False)
@@ -1557,11 +1556,9 @@ class TUIApp:
                         str(tool_name),
                         start_time=_agui_event_timestamp_seconds(event),
                     )
-                    block_id = self._append_block(
+                    self._append_block(
                         self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
                     )
-                    if self._capture_active_run_blocks:
-                        self._active_run_tool_block_ids.add(block_id)
                 continue
             if event_type == "TOOL_CALL_CHUNK":
                 agent_id = str(event.get("yaacliAgentId") or "main")
@@ -1584,11 +1581,9 @@ class TUIApp:
                         display_args,
                         start_time=_agui_event_timestamp_seconds(event),
                     )
-                    block_id = self._append_block(
+                    self._append_block(
                         self._event_renderer.render_tool_call_start(str(tool_name), tool_call_id).rstrip()
                     )
-                    if self._capture_active_run_blocks:
-                        self._active_run_tool_block_ids.add(block_id)
                 elif tool_call_id and tool_call_id in self._tool_messages:
                     existing_tool_msg = self._tool_messages[tool_call_id]
                     if not existing_tool_msg.args:
@@ -1617,15 +1612,13 @@ class TUIApp:
                     duration = 0.0
                     if tool_call_id in self._event_renderer.tracker.tool_calls:
                         duration = self._event_renderer.tracker.tool_calls[tool_call_id].duration()
-                    block_id = self._append_block(
+                    self._append_block(
                         self._event_renderer.render_tool_call_complete(
                             tool_msg,
                             duration=duration,
                             width=width,
                         ).rstrip()
                     )
-                    if self._capture_active_run_blocks:
-                        self._active_run_tool_block_ids.add(block_id)
                     self._printed_tool_calls.add(tool_call_id)
                 continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.steering_accepted":
@@ -3208,7 +3201,6 @@ class TUIApp:
         run_id = uuid.uuid4().hex[:12]
         self._active_display_run_id = run_id
         self._active_run_block_ids.clear()
-        self._active_run_tool_block_ids.clear()
         self._display_adapter = AguiEventAdapter(
             session_id=self._session_id,
             run_id=run_id,
@@ -3319,7 +3311,6 @@ class TUIApp:
             self._active_display_run_id = None
             self._capture_active_run_blocks = False
             self._active_run_block_ids.clear()
-            self._active_run_tool_block_ids.clear()
 
     def _require_run_revision(self, logical_run_id: str) -> RevisionRecord:
         if self._durable_store is None:
@@ -3398,15 +3389,11 @@ class TUIApp:
         return self._active_run_display_events(validate_display_events(revision.display_projection))
 
     def _reconcile_terminal_transcript(self, revision: RevisionRecord) -> None:
-        """Replace only unstable active-run blocks with canonical output."""
+        """Replace the active run with its canonical committed display projection."""
         steering_keys = self._active_run_steering_projection_keys()
         self._cancel_pending_stream_render()
-        unstable_block_ids = self._active_run_block_ids - self._active_run_tool_block_ids
-        self._transcript.remove(unstable_block_ids)
-        self._active_run_tool_block_ids = {
-            block_id for block_id in self._active_run_tool_block_ids if self._transcript.contains(block_id)
-        }
-        self._active_run_block_ids = set(self._active_run_tool_block_ids)
+        self._transcript.remove(self._active_run_block_ids)
+        self._active_run_block_ids.clear()
         self._sync_transcript_state()
         self._invalidate_output_cache()
         self._projected_steering_receipt_keys.difference_update(steering_keys)
@@ -3419,6 +3406,15 @@ class TUIApp:
         self._streaming_thinking_buffer = None
         self._streaming_thinking_block_id = None
         self._streaming_thinking_line_index = None
+
+        # Tool render caches describe the removed live blocks, not the durable
+        # revision. Clear them so canonical tool events rebuild every call even
+        # when transcript retention or an earlier UI reset discarded its block.
+        self._tool_messages.clear()
+        self._printed_tool_calls.clear()
+        self._event_renderer.clear()
+        self._subagent_states.clear()
+
         canonical_events = [
             event for event in self._terminal_run_display_events(revision) if event.get("type") != "RUN_STARTED"
         ]
@@ -3938,6 +3934,8 @@ class TUIApp:
         rendered = self._renderer.render(text, width=self._get_terminal_width())
 
         block_id = self._append_block(rendered.rstrip())
+        if self._active_display_run_id is not None:
+            self._active_run_block_ids.add(block_id)
         self._subagent_states[agent_id] = {
             "block_id": block_id,
             "line_index": self._transcript.index_of(block_id),
@@ -3969,7 +3967,9 @@ class TUIApp:
                 if event.error:
                     text.append(f" | {event.error[:50]}", style="dim red")
             rendered = self._renderer.render(text, width=self._get_terminal_width())
-            self._append_output(rendered.rstrip())
+            block_id = self._append_block(rendered.rstrip())
+            if self._active_display_run_id is not None:
+                self._active_run_block_ids.add(block_id)
             return
 
         state = self._subagent_states[agent_id]
@@ -5157,6 +5157,7 @@ class TUIApp:
         if self._active_logical_run_id is not None and self._session_service is not None:
             logical_run_id = self._active_logical_run_id
             service = self._session_service
+            service.accept_cancel(logical_run_id, reason="user_interrupted")
             self._set_phase(TUIPhase.CANCELLING)
 
             async def cancel_run() -> None:

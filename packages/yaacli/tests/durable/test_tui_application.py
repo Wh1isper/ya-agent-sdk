@@ -291,8 +291,10 @@ session_dir = "{session_dir}"
         observed_tool_events = [
             event for event in revision.display_projection if event.get("toolCallName") == "blocking_tool"
         ]
-        assert len(observed_tool_events) == 1
-        assert observed_tool_events[0]["type"] == "TOOL_CALL_CHUNK"
+        assert [event["type"] for event in observed_tool_events] == [
+            "TOOL_CALL_START",
+            "TOOL_CALL_CHUNK",
+        ]
         observed_tool_call_id = observed_tool_events[0]["toolCallId"]
         assert not any(
             event.get("type") == "TOOL_CALL_RESULT" and event.get("toolCallId") == observed_tool_call_id

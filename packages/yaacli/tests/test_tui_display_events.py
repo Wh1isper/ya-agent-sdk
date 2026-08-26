@@ -128,6 +128,11 @@ def test_terminal_recovery_projection_keeps_observed_incomplete_tool_calls() -> 
             "toolCallName": "shell",
             "delta": '{"command":',
         },
+        {
+            "type": "TOOL_CALL_START",
+            "toolCallId": "start-only-tool",
+            "toolCallName": "shell",
+        },
         {"type": "RUN_STARTED", "runId": "run-2"},
         {
             "type": "TOOL_CALL_CHUNK",
@@ -145,12 +150,13 @@ def test_terminal_recovery_projection_keeps_observed_incomplete_tool_calls() -> 
         "TOOL_CALL_CHUNK",
     ]
     assert any(event.get("toolCallId") == "incomplete-tool" for event in projected)
+    assert any(event.get("toolCallId") == "start-only-tool" for event in projected)
 
 
-def test_non_success_reconciliation_preserves_tools_and_unrelated_background_output() -> None:
+def test_non_success_reconciliation_rebuilds_canonical_tools_after_live_blocks_are_lost() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._active_display_run_id = "run-1"
-    app._handle_and_record_display_events([
+    canonical_events = [
         {"type": "RUN_STARTED", "runId": "run-1"},
         {"type": "TEXT_MESSAGE_START", "messageId": "text-1"},
         {"type": "TEXT_MESSAGE_CHUNK", "messageId": "text-1", "delta": "unstable partial text"},
@@ -166,27 +172,71 @@ def test_non_success_reconciliation_preserves_tools_and_unrelated_background_out
             "toolCallName": "shell",
             "content": "kept tool result",
         },
-    ])
+    ]
+    app._handle_and_record_display_events(canonical_events)
     app._append_system_output("background worker is ready")
+
+    # Transcript retention or an explicit UI reset may discard live blocks
+    # while the tool render caches still claim that those calls were printed.
+    app._transcript.remove(set(app._active_run_block_ids))
+    app._sync_transcript_state()
+
     app._reconcile_terminal_transcript(
         RevisionRecord(
             revision_id="revision-1",
             session_id="session-1",
             logical_run_id="logical-run-1",
             commit_kind="failed",
-            display_projection=[],
+            display_projection=canonical_events,
             terminal={"status": "failed"},
             created_at=datetime.now(UTC),
         )
     )
 
     output = "\n".join(app._output_lines)
-    assert "unstable partial text" not in output
+    assert "unstable partial text" in output
     assert "Calling:" in output
     assert "Complete:" in output
     assert "kept tool result" in output
     assert "background worker is ready" in output
     assert app._tool_messages["tool-1"].content == "kept tool result"
+
+
+def test_non_success_reconciliation_removes_live_foreground_subagent_progress() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._active_display_run_id = "run-1"
+    app._handle_stream_event(
+        StreamEvent(
+            agent_id="main",
+            agent_name="main",
+            event=SubagentStartEvent(
+                event_id="subagent-start-1",
+                execution_id="worker-1",
+                agent_id="worker-1",
+                agent_name="worker",
+                mode="foreground",
+            ),
+        )
+    )
+    app._append_system_output("background worker is ready")
+    assert any("Running..." in line for line in app._output_lines)
+
+    app._reconcile_terminal_transcript(
+        RevisionRecord(
+            revision_id="revision-1",
+            session_id="session-1",
+            logical_run_id="logical-run-1",
+            commit_kind="cancelled",
+            display_projection=[{"type": "RUN_STARTED", "runId": "run-1"}],
+            terminal={"status": "cancelled"},
+            created_at=datetime.now(UTC),
+        )
+    )
+
+    output = "\n".join(app._output_lines)
+    assert "Running..." not in output
+    assert "background worker is ready" in output
+    assert app._subagent_states == {}
 
 
 def test_tui_terminal_replay_reconstructs_tools_after_live_render() -> None:

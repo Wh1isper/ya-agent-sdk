@@ -77,13 +77,14 @@ The transcript is stored as bounded render blocks and exposed through a virtual 
 - Streaming text and thinking update stable block IDs instead of appending duplicate snapshots.
 - A terminal revision never rebuilds the complete live transcript from its bounded,
   lossy replay projection. Successful runs keep their live segment; failed, cancelled,
-  or interrupted runs replace only the active segment with the canonical terminal
+  or interrupted runs remove every live block owned by the active run, reset that run's
+  transient tool-render caches, and rebuild the segment from the canonical committed
   projection. Controlled exits preserve safe partial model text and observed tool-call
-  display records, including an invocation interrupted before its result. Cancellation
-  at a native segment/checkpoint boundary retains the complete live bounded projection
-  rather than rolling visible tool calls back to the preceding stable checkpoint.
-  Canonical model history remains governed separately by SDK recoverable-message rules,
-  and unrelated scrollback remains unchanged.
+  display records, including a tool start interrupted before its arguments or result.
+  Cancellation acceptance freezes the complete live bounded projection before worker
+  cancellation, so a native segment/checkpoint race cannot roll visible calls back to an
+  older checkpoint. Historical and unrelated background scrollback remains unchanged;
+  canonical model history remains governed separately by SDK recoverable-message rules.
 - Tool previews are bounded; `/tool <call-id>` retrieves the complete retained result.
 
 ## Task Pane

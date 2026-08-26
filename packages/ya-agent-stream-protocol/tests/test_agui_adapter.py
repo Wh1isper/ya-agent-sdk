@@ -287,6 +287,23 @@ def test_agui_replay_buffer_keeps_runs_separate() -> None:
     assert [event["delta"] for event in text_chunks] == ["first", "second"]
 
 
+def test_agui_replay_buffer_retains_tool_start_without_a_chunk() -> None:
+    replay = AguiReplayBuffer()
+    replay.append({
+        "type": "TOOL_CALL_START",
+        "toolCallId": "tool-1",
+        "toolCallName": "delegate",
+    })
+
+    assert replay.snapshot() == [
+        {
+            "type": "TOOL_CALL_START",
+            "toolCallId": "tool-1",
+            "toolCallName": "delegate",
+        }
+    ]
+
+
 def test_agui_replay_buffer_merges_tool_call_chunks() -> None:
     replay = AguiReplayBuffer()
     replay.append({
