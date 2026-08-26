@@ -263,7 +263,7 @@ Provider API keys can live in that `.env` file or in `~/.yaacli/config.toml` und
 SDK and tool variables such as `YA_AGENT_*` and search API keys can also live in that same `.env` file because YAACLI loads it into the process environment at startup. `YA_AGENT_TOOL_TIMEOUT_SECONDS` changes the generic tool-execution ceiling from its 600-second default; tool-owned shorter deadlines still apply.
 Use [`packages/ya-agent-sdk/.env.example`](../ya-agent-sdk/.env.example) as the reference list for SDK and tool variables.
 
-The TUI detects the terminal's light or dark background at startup. For recognized local terminals such as VS Code's integrated terminal, it performs a short OSC 11 query; active queries are skipped over SSH to avoid delayed terminal responses. Detection then falls back to `COLORFGBG`, followed by the dark theme. Override detection in `~/.yaacli/config.toml` when needed:
+The TUI selects a light or dark theme at startup. In `auto` mode it uses the passive `COLORFGBG` terminal hint when available, followed by the dark theme. YAACLI does not send active color queries because a delayed terminal response can leak into the compose buffer or the parent shell after exit. Override detection in `~/.yaacli/config.toml` when needed:
 
 ```toml
 [display]

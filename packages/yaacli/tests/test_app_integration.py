@@ -75,6 +75,7 @@ from yaacli.config import (
 from yaacli.durable.models import InputState, SessionStatus, SessionSummary
 from yaacli.model_profiles import ResolvedModelProfile, build_model_profiles
 from yaacli.session import TUIContext
+from yaacli.shell_monitor import ShellNotification
 from yaacli.theme import prompt_toolkit_style_rules
 
 
@@ -1857,11 +1858,35 @@ def test_tui_app_user_action_bell_can_be_disabled() -> None:
         config_manager=MockConfigManager(),
     )
     app._app = MagicMock()
+    app._tui_running = True
 
     app._notify_user_action_required()
 
     app._app.output.write_raw.assert_not_called()
     app._app.output.flush.assert_not_called()
+
+
+def test_tui_app_completion_bell_is_scoped_to_terminal_ownership() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+
+    app._notify_turn_complete()
+
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
+
+    app._tui_running = True
+    app._shutdown_requested = True
+    app._notify_turn_complete()
+
+    app._app.output.write_raw.assert_not_called()
+    app._app.output.flush.assert_not_called()
+
+    app._shutdown_requested = False
+    app._notify_turn_complete()
+
+    app._app.output.write_raw.assert_called_once_with("\a")
+    app._app.output.flush.assert_called_once_with()
 
 
 def test_tui_app_completion_bell_can_be_disabled() -> None:
@@ -1871,11 +1896,60 @@ def test_tui_app_completion_bell_can_be_disabled() -> None:
         config_manager=MockConfigManager(),
     )
     app._app = MagicMock()
+    app._tui_running = True
 
     app._notify_turn_complete()
 
     app._app.output.write_raw.assert_not_called()
     app._app.output.flush.assert_not_called()
+
+
+def test_tui_app_shutdown_status_does_not_write_after_terminal_release(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    app._app = MagicMock()
+
+    app._show_shutdown_status("closing durable worker")
+
+    assert app._shutdown_status == "closing durable worker"
+    app._app.invalidate.assert_not_called()
+    assert capsys.readouterr().err == ""
+
+
+def test_tui_app_exit_request_closes_notification_ingress_before_terminal_release() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    application = MagicMock()
+    monitor = MagicMock()
+    app._get_shell_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+
+    def assert_shutdown_requested() -> None:
+        assert app._shutdown_requested is True
+        monitor.set_notification_callback.assert_called_once_with(None)
+
+    application.exit.side_effect = assert_shutdown_requested
+
+    app._request_exit(application)
+
+    monitor.set_notification_callback.assert_called_once_with(None)
+    application.exit.assert_called_once_with()
+    assert app._shutdown_status == "exit requested"
+
+
+def test_tui_app_shutdown_rejects_stale_shell_notifications() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    monitor = MagicMock()
+    notification = ShellNotification(process_id="process-1", kind="completion")
+    app._get_shell_monitor = MagicMock(return_value=monitor)  # type: ignore[method-assign]
+    app._launch_agent = MagicMock()  # type: ignore[method-assign]
+    app._shutdown_requested = True
+
+    app._on_shell_notification(notification)
+    app._route_pending_shell_notifications()
+
+    assert app._output_lines == []
+    monitor.pending.assert_not_called()
+    app._launch_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2628,6 +2702,7 @@ async def test_tui_app_deferred_flow_resolves_approvals_and_calls() -> None:
 async def test_tui_app_hitl_pauses_timer_rings_bell_and_resumes_after_answer() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
     app._app = MagicMock()
+    app._tui_running = True
     app._app.output.get_size.return_value = MagicMock(columns=120, rows=40)
     app._run_started_at = 100.0
     deferred = DeferredToolRequests(
