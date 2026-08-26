@@ -15,7 +15,7 @@ YA Claw packages a durable runtime shell around `ya-agent-sdk` with:
 - SQLite-first durable state with optional PostgreSQL
 - local filesystem session continuity and exported state
 - a bundled web shell for local and self-hosted use
-- bridge adapters that connect IM channels to the YA Claw service
+- bridge adapters that connect external event sources to the YA Claw service
 
 ## Current Direction
 
@@ -32,7 +32,7 @@ Key areas in this package:
 - `spec/` — architecture and runtime design documents
 - `tests/` — runtime tests
 - `ya_claw/api/` — HTTP API surface
-- `ya_claw/bridge/` — IM bridge adapters and event handling
+- `ya_claw/bridge/` — external bridge adapters and event handling
 - `ya_claw/app.py` and `ya_claw/cli.py` — application entrypoints
 - `ya_claw/config.py` — runtime configuration
 
@@ -115,16 +115,19 @@ This section is the maintainer index for implementation details that affect code
 
 ### Bridge Runtime
 
-- Bridge adapter types are enumerated through `BridgeAdapterType`; the current built-in adapter is `lark`.
+- Bridge adapter types are enumerated through `BridgeAdapterType`; the built-in adapters are `github` and `lark`.
 - Bridge deployment dispatch uses `BridgeDispatchMode` (`embedded`, `manual`) and stays separate from run execution dispatch (`queue`, `async`, `stream`).
 - `embedded` is the default bridge dispatch mode and runs adapter tasks under `BridgeSupervisor` in the same HTTP server lifespan as `ExecutionSupervisor`.
 - `manual` starts the HTTP server with bridge dispatch managed outside the server lifespan.
+- GitHub bridge ingress polls every notification reason for an ordinary account with a classic PAT, routes Issue/PR subjects, and applies `YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS` with exact case-insensitive logins or `*`.
+- GitHub Issue/PR resources map one-to-one to durable sessions, inherit the configured default workspace, and use a durable timestamp cursor plus versioned notification IDs for restart-safe replay.
 - Lark bridge event allowlist comes from `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`; defaults cover `im.chat.member.bot.added_v1`, `im.chat.member.user.added_v1`, `im.message.receive_v1`, and `drive.notice.comment_add_v1`.
 - Lark message events map `(adapter, tenant_key, chat_id)` one-to-one to a session.
 - Other accepted Lark events use `chat_id` when present and fall back to stable event or Drive conversation keys.
 - Each accepted inbound event creates a bridge-triggered run after event/message dedupe.
+- GitHub replies/actions are performed by the agent from the workspace with bundled `gh`; `YA_CLAW_BRIDGE_GITHUB_TOKEN` is exposed there as `GH_TOKEN`.
 - Lark bridge replies/actions are performed by the agent from the workspace with `lark-cli`.
-- Workspace environments receive `LARK_APP_ID` and `LARK_APP_SECRET` from process env or Lark bridge app settings.
+- Workspace environments receive `GH_TOKEN` from GitHub bridge settings and `LARK_APP_ID` / `LARK_APP_SECRET` from process env or Lark bridge app settings.
 
 ### Session Memory
 
@@ -320,9 +323,9 @@ profiles:
 
 Session and run requests can provide `workspace.mounts` with one or more logical workspace folders, one default mount, a default cwd, and `rw` or `ro` access per mount. When requests omit workspace configuration, YA Claw uses the shared workspace configured by `YA_CLAW_WORKSPACE_DIR` and maps it to `/workspace`. Workspace guidance and memory use the default logical mount, and runtime prompts list the resolved mount set.
 
-Workspace environments receive `LARK_APP_ID` and `LARK_APP_SECRET` from explicit process environment values or from the configured Lark bridge app settings. The official Docker workspace entrypoint writes these values into `/home/claw/.lark-cli/config.json` for `lark-cli` bot commands, and clears `LARKSUITE_CLI_APP_ID` / `LARKSUITE_CLI_APP_SECRET` in the container runtime environment so `lark-cli` uses the generated config profile. `LARKSUITE_CLI_BRAND`, `LARKSUITE_CLI_DEFAULT_AS`, and `LARKSUITE_CLI_STRICT_MODE` tune that generated profile. `YA_CLAW_WORKSPACE_ENV_VARS` forwards additional comma-separated process environment variable names into workspace environments. For Docker workspaces, forwarded values are passed at session or run workspace container creation time.
+Workspace environments receive `GH_TOKEN` from `YA_CLAW_BRIDGE_GITHUB_TOKEN`, plus `LARK_APP_ID` and `LARK_APP_SECRET` from explicit process environment values or from the configured Lark bridge app settings. The official Docker workspace entrypoint writes Lark values into `/home/claw/.lark-cli/config.json` for `lark-cli` bot commands, and clears `LARKSUITE_CLI_APP_ID` / `LARKSUITE_CLI_APP_SECRET` in the container runtime environment so `lark-cli` uses the generated config profile. `LARKSUITE_CLI_BRAND`, `LARKSUITE_CLI_DEFAULT_AS`, and `LARKSUITE_CLI_STRICT_MODE` tune that generated profile. `YA_CLAW_WORKSPACE_ENV_VARS` forwards additional comma-separated process environment variable names into workspace environments and may explicitly override built-in aliases. For Docker workspaces, values are passed at session or run workspace container creation time.
 
-The default Docker workspace image is `ghcr.io/wh1isper/ya-claw-workspace:latest`. It is based on Debian stable and includes Python, Node.js, `lark-cli`, and bundled workspace skills copied into mounted workspaces at container start. Auto-started workspace containers receive `YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, and `YA_CLAW_HOST_GID`; the default values come from the YA Claw service process UID/GID and can be overridden with `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID` and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`. Docker exec uses `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto` by default, which resolves to the configured workspace UID:GID, and sets `HOME` from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME` with default `/home/claw`. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS` adds comma-separated provider support mounts to Docker workspace containers, with `rw` and `ro` modes. Docker session sandboxes use generation-specific containers named `ya-claw-session-{session_id_short}-gN`, store cache metadata under `~/.ya-claw/data/docker-workspace-containers/sessions/{session_id}/workspace.json`, resolve and store the Docker image digest before reuse, refresh `last_used_at` during active runs and once on run exit, and stop idle containers according to `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY` and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS`. TTL cleanup deletes the session `workspace.json` cache file and uses the same cache-path lock as run startup. A changed image digest causes YA Claw to remove the stale container and start a new one from the current image. Schedule and heartbeat runs use run-scoped containers named `ya-claw-run-{run_id_short}` and cache metadata under `runs/{run_id}/workspace.json`.
+The default Docker workspace image is `ghcr.io/wh1isper/ya-claw-workspace:latest`. It is based on Debian stable and includes Python, Node.js, GitHub CLI (`gh`), `lark-cli`, and bundled workspace skills copied into mounted workspaces at container start. Auto-started workspace containers receive `YA_CLAW_WORKSPACE_UID`, `YA_CLAW_WORKSPACE_GID`, `YA_CLAW_HOST_UID`, and `YA_CLAW_HOST_GID`; the default values come from the YA Claw service process UID/GID and can be overridden with `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_UID` and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_GID`. Docker exec uses `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto` by default, which resolves to the configured workspace UID:GID, and sets `HOME` from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME` with default `/home/claw`. `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS` adds comma-separated provider support mounts to Docker workspace containers, with `rw` and `ro` modes. Docker session sandboxes use generation-specific containers named `ya-claw-session-{session_id_short}-gN`, store cache metadata under `~/.ya-claw/data/docker-workspace-containers/sessions/{session_id}/workspace.json`, resolve and store the Docker image digest before reuse, refresh `last_used_at` during active runs and once on run exit, and stop idle containers according to `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_RETENTION_POLICY` and `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_IDLE_TTL_SECONDS`. TTL cleanup deletes the session `workspace.json` cache file and uses the same cache-path lock as run startup. A changed image digest causes YA Claw to remove the stale container and start a new one from the current image. Schedule and heartbeat runs use run-scoped containers named `ya-claw-run-{run_id_short}` and cache metadata under `runs/{run_id}/workspace.json`.
 
 Profiles can be managed through:
 
@@ -367,7 +370,11 @@ Bridge dispatch controls whether the YA Claw HTTP server starts bridge adapters:
 - `embedded` starts enabled adapters inside the YA Claw server lifespan under `BridgeSupervisor`.
 - `manual` starts the YA Claw HTTP server without starting `BridgeSupervisor`.
 
-Bridge adapters submit inbound events through the same session/run controller path used by HTTP requests, so bridge ingress behaves as a self-request inside the service process. The Lark bridge reads `YA_CLAW_BRIDGE_LARK_EVENT_TYPES` as a comma-separated event allowlist. The default allowlist covers bot-added-to-chat, user-added-to-chat, message receive, and Drive comment notification events. Message receive events map each `tenant_key + chat_id` pair to one YA Claw session. Other Lark events use `chat_id` when present and fall back to a stable event or Drive conversation key. Every accepted inbound event creates a queued bridge-triggered run, and the agent replies or acts from the workspace with `lark-cli`.
+Bridge adapters submit inbound events through the same session/run controller path used by HTTP requests, so bridge ingress behaves as a self-request inside the service process.
+
+The GitHub bridge polls `GET /notifications` with `all=true` from a durable cursor, follows every page, honors `X-Poll-Interval`, and uses a 60-second overlap on established cursors. It accepts Issue and Pull Request subjects from exact case-insensitive sender logins configured in `YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS`; `*` disables the sender gate. Notification thread ID plus `updated_at` forms both the event and message ID. Repository ID plus resource kind and number forms the conversation key, so one Issue/PR reuses one session and the configured default workspace. A classic PAT is required because GitHub Notifications does not support fine-grained PATs. `YA_CLAW_BRIDGE_GITHUB_TOKEN` is also injected into workspaces as `GH_TOKEN` for `gh` and `git` operations. See [GitHub Notification Bridge](spec/14-github-bridge.md).
+
+The Lark bridge reads `YA_CLAW_BRIDGE_LARK_EVENT_TYPES` as a comma-separated event allowlist. The default allowlist covers bot-added-to-chat, user-added-to-chat, message receive, and Drive comment notification events. Message receive events map each `tenant_key + chat_id` pair to one YA Claw session. Other Lark events use `chat_id` when present and fall back to a stable event or Drive conversation key. Every accepted inbound event creates a queued bridge-triggered run, and the agent replies or acts from the workspace with `lark-cli`.
 
 ## Web Shell
 

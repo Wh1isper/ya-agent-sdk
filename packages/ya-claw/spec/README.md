@@ -40,6 +40,7 @@ This spec set defines one execution shape:
 | 11      | [11-session-agency.md](11-session-agency.md)                                             | singleton agency, context-bearing fires, idle wake, and async task feedback  |
 | 12      | [12-shell-sandbox.md](12-shell-sandbox.md)                                               | default shell sandbox policy, Linux/macOS backends, raw host escalation      |
 | 13      | [13-workflows.md](13-workflows.md)                                                       | Claw-managed workflows, agent supervision tools, profile-backed node runs    |
+| 14      | [14-github-bridge.md](14-github-bridge.md)                                               | outbound GitHub notification polling, sender policy, sessions, and cursor    |
 
 ## Cross-Package Architecture
 

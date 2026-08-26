@@ -102,11 +102,14 @@ class RunController:
         settings: ClawSettings,
         runtime_state: InMemoryRuntimeState,
         request: RunCreateRequest,
+        *,
+        source_delivery_id: str | None = None,
     ) -> RunDetail:
         """Create and publish one externally requested run."""
         run_record = await self.create_record(
             db_session,
             request,
+            source_delivery_id=source_delivery_id,
             default_profile_name=settings.default_profile,
             capability_plugins=settings.resolved_capability_plugins,
         )
@@ -473,6 +476,7 @@ class RunController:
             session_id=run_record.session_id,
             run_id=run_id,
             status=RunStatus(run_record.status),
+            accepted=admission.created,
             input_id=input_record.id,
             input_delivery_key=input_record.delivery_key,
             input_disposition=cast(

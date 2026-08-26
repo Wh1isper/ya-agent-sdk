@@ -4,15 +4,21 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from ya_claw.bridge.context_snapshot import BridgePreviousMessageSnapshotItem, BridgePreviousMessagesSnapshot
-from ya_claw.bridge.controller import BridgeController
+from ya_claw.bridge.controller import BridgeController, _bridge_delivery_key
 from ya_claw.bridge.models import BridgeAdapterType, BridgeEventStatus, BridgeInboundAction, BridgeInboundMessage
 from ya_claw.config import ClawSettings
 from ya_claw.db.engine import create_engine, create_session_factory
 from ya_claw.execution.dispatcher import RunDispatcher
-from ya_claw.orm.tables import BridgeConversationRecord, BridgeEventRecord, RunRecord, SessionRecord
+from ya_claw.orm.tables import (
+    BridgeConversationRecord,
+    BridgeEventRecord,
+    RunInputInboxRecord,
+    RunRecord,
+    SessionRecord,
+)
 from ya_claw.runtime_state import create_runtime_state
 
 
@@ -492,3 +498,278 @@ async def test_bridge_controller_reset_and_retries_failed_bridge_run(db_session:
     assert retry_run.run_metadata["restore_state"] is False
     assert retry_run.run_metadata["recovery"]["mode"] == "reset_and_retry"
     assert refreshed_session.head_success_run_id == "success-run"
+
+
+async def test_bridge_controller_uses_github_profile_prompt_and_shared_default_workspace(
+    db_session: AsyncSession,
+) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_github_default_profile="general",
+        _env_file=None,
+    )
+    metadata = {
+        "github": {
+            "repository": "acme/widgets",
+            "resource_kind": "issue",
+            "resource_number": 7,
+            "resource_url": "https://github.com/acme/widgets/issues/7",
+            "reason": "mention",
+            "subject_title": "Fix widget",
+        }
+    }
+
+    first = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundMessage(
+            adapter=BridgeAdapterType.GITHUB,
+            tenant_key="github:api.github.com:100",
+            event_id="github:101:2026-08-26T08:00:00Z",
+            message_id="github:101:2026-08-26T08:00:00Z",
+            thread_id="101",
+            chat_id="github:42:issue:7",
+            event_type="github.notification",
+            sender_id="alice",
+            chat_type="issue",
+            message_type="notification",
+            content_text="GitHub notification update.",
+            create_time="2026-08-26T08:00:00Z",
+            metadata=metadata,
+        ),
+    )
+    second = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        BridgeInboundMessage(
+            adapter=BridgeAdapterType.GITHUB,
+            tenant_key="github:api.github.com:100",
+            event_id="github:101:2026-08-26T08:01:00Z",
+            message_id="github:101:2026-08-26T08:01:00Z",
+            thread_id="101",
+            chat_id="github:42:issue:7",
+            event_type="github.notification",
+            sender_id="alice",
+            chat_type="issue",
+            message_type="notification",
+            content_text="GitHub notification update again.",
+            create_time="2026-08-26T08:01:00Z",
+            metadata=metadata,
+        ),
+    )
+
+    assert first.session_id == second.session_id
+    session = await db_session.get(SessionRecord, first.session_id)
+    assert isinstance(session, SessionRecord)
+    assert session.profile_name == "general"
+    assert "workspace" not in session.session_metadata
+    assert session.session_metadata["bridge"]["adapter_metadata"] == metadata
+    assert first.run_id is not None
+    run = await db_session.get(RunRecord, first.run_id)
+    assert isinstance(run, RunRecord)
+    prompt = run.input_parts[0]["text"]
+    assert prompt.startswith("<github_bridge_event>")
+    assert "<repository>acme/widgets</repository>" in prompt
+    assert "<resource_kind>issue</resource_kind>" in prompt
+    assert "gh issue view 7 --repo acme/widgets --comments" in prompt
+    assert "gh issue comment 7 --repo acme/widgets --body &apos;&lt;reply&gt;&apos;" in prompt
+    assert run.run_metadata["bridge"]["adapter_metadata"] == metadata
+
+
+async def test_bridge_controller_recovers_received_github_event(db_session: AsyncSession) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_github_default_profile="general",
+        _env_file=None,
+    )
+    message = BridgeInboundMessage(
+        adapter=BridgeAdapterType.GITHUB,
+        tenant_key="github:api.github.com:100",
+        event_id="github:recover:2026-08-26T08:00:00Z",
+        message_id="github:recover:2026-08-26T08:00:00Z",
+        thread_id="recover",
+        chat_id="github:42:issue:7",
+        event_type="github.notification",
+        sender_id="alice",
+        chat_type="issue",
+        message_type="notification",
+        content_text="Recover this GitHub notification.",
+        create_time="2026-08-26T08:00:00Z",
+        metadata={
+            "github": {
+                "repository": "acme/widgets",
+                "resource_kind": "issue",
+                "resource_number": 7,
+                "resource_url": "https://github.com/acme/widgets/issues/7",
+                "reason": "mention",
+                "subject_title": "Fix widget",
+            }
+        },
+    )
+    db_session.add(
+        BridgeEventRecord(
+            id="received-github-event",
+            adapter=message.adapter,
+            tenant_key=message.tenant_key,
+            event_id=message.event_id,
+            external_message_id=message.message_id,
+            external_chat_id=message.chat_id,
+            event_type=message.event_type,
+            status=BridgeEventStatus.RECEIVED,
+            raw_event={},
+            normalized_event=message.model_dump(mode="json"),
+        )
+    )
+    await db_session.commit()
+
+    recovered = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        message,
+    )
+    duplicate = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        message,
+    )
+
+    assert recovered.status == BridgeEventStatus.QUEUED
+    assert recovered.run_id is not None
+    assert duplicate.status == BridgeEventStatus.DUPLICATE
+    event_record = await db_session.get(BridgeEventRecord, "received-github-event")
+    assert isinstance(event_record, BridgeEventRecord)
+    assert event_record.status == BridgeEventStatus.QUEUED
+    assert event_record.run_id == recovered.run_id
+
+
+async def test_bridge_controller_retries_running_github_steer_after_metadata_only_failure(
+    db_session: AsyncSession,
+) -> None:
+    runtime_state = create_runtime_state()
+    controller = BridgeController()
+    settings = ClawSettings(api_token="test-token", _env_file=None)  # noqa: S106
+    metadata = {
+        "github": {
+            "repository": "acme/widgets",
+            "resource_kind": "issue",
+            "resource_number": 7,
+            "resource_url": "https://github.com/acme/widgets/issues/7",
+            "reason": "mention",
+            "subject_title": "Fix widget",
+        }
+    }
+
+    def github_message(event_id: str, text: str) -> BridgeInboundMessage:
+        return BridgeInboundMessage(
+            adapter=BridgeAdapterType.GITHUB,
+            tenant_key="github:api.github.com:100",
+            event_id=event_id,
+            message_id=event_id,
+            thread_id="recover-steer",
+            chat_id="github:42:issue:7",
+            event_type="github.notification",
+            sender_id="alice",
+            chat_type="issue",
+            message_type="notification",
+            content_text=text,
+            create_time="2026-08-26T08:00:00Z",
+            metadata=metadata,
+        )
+
+    first = github_message("github:recover-steer:2026-08-26T08:00:00Z", "First update")
+    second = github_message("github:recover-steer:2026-08-26T08:01:00Z", "Second update")
+    first_result = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        first,
+    )
+    assert first_result.run_id is not None
+    run = await db_session.get(RunRecord, first_result.run_id)
+    assert isinstance(run, RunRecord)
+    run.status = "running"
+    run.run_metadata = {**run.run_metadata, "bridge": {**run.run_metadata["bridge"], "event_id": second.event_id}}
+    db_session.add(
+        BridgeEventRecord(
+            id="failed-github-steer",
+            adapter=second.adapter,
+            tenant_key=second.tenant_key,
+            event_id=second.event_id,
+            external_message_id=second.message_id,
+            external_chat_id=second.chat_id,
+            event_type=second.event_type,
+            status=BridgeEventStatus.FAILED,
+            raw_event={},
+            normalized_event=second.model_dump(mode="json"),
+        )
+    )
+    await db_session.commit()
+
+    retried = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        second,
+    )
+
+    assert retried.status == BridgeEventStatus.STEERED
+    inbox_rows = (await db_session.execute(select(RunInputInboxRecord))).scalars().all()
+    assert len(inbox_rows) == 1
+    assert inbox_rows[0].run_id == run.id
+    assert inbox_rows[0].input_parts[0]["text"].startswith("<github_bridge_event>")
+
+    third = github_message("github:recover-steer:2026-08-26T08:02:00Z", "Third update")
+    run.status = "completed"
+    db_session.add(
+        BridgeEventRecord(
+            id="failed-github-inbox-only",
+            adapter=third.adapter,
+            tenant_key=third.tenant_key,
+            event_id=third.event_id,
+            external_message_id=third.message_id,
+            external_chat_id=third.chat_id,
+            event_type=third.event_type,
+            status=BridgeEventStatus.FAILED,
+            raw_event={},
+            normalized_event=third.model_dump(mode="json"),
+        )
+    )
+    db_session.add(
+        RunInputInboxRecord(
+            id="github-inbox-only",
+            run_id=run.id,
+            delivery_key=_bridge_delivery_key(third),
+            input_parts=[{"type": "text", "text": "Third update"}],
+        )
+    )
+    await db_session.commit()
+
+    inbox_only_recovery = await controller.handle_inbound_message(
+        db_session,
+        settings,
+        runtime_state,
+        RunDispatcher(None),
+        third,
+    )
+
+    assert inbox_only_recovery.status == BridgeEventStatus.DUPLICATE
+    recovered_event = await db_session.get(BridgeEventRecord, "failed-github-inbox-only")
+    assert isinstance(recovered_event, BridgeEventRecord)
+    assert recovered_event.status == BridgeEventStatus.STEERED
+    assert recovered_event.run_id == run.id
+    run_count = await db_session.scalar(select(func.count()).select_from(RunRecord))
+    assert run_count == 1

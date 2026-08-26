@@ -1,6 +1,6 @@
 ---
 name: ya-claw-deploy
-description: Deploy, configure, operate, and troubleshoot YA Claw, the single-node runtime web service in ya-mono. Use for production and self-hosted Docker deployment, docker-compose, systemd services, SQLite or PostgreSQL storage, Docker workspace provider configuration, profile seeding, execution coordinator setup, health checks, reverse proxy setup, Lark bridge deployment, upgrades, backup, restore, and production operations for packages/ya-claw.
+description: Deploy, configure, operate, and troubleshoot YA Claw, the single-node runtime web service in ya-mono. Use for production and self-hosted Docker deployment, docker-compose, systemd services, SQLite or PostgreSQL storage, Docker workspace provider configuration, profile seeding, execution coordinator setup, health checks, reverse proxy setup, GitHub or Lark bridge deployment, upgrades, backup, restore, and production operations for packages/ya-claw.
 ---
 
 # YA Claw Deployment
@@ -22,7 +22,7 @@ flowchart LR
     DOCKER --> WSC["Reusable Workspace Container"]
 ```
 
-The Docker shell shapes give agents an isolated workspace container with Python, Node.js, `lark-cli`, and bundled workspace skills.
+The Docker shell shapes give agents an isolated workspace container with Python, Node.js, GitHub CLI (`gh`), `lark-cli`, and bundled workspace skills.
 
 ## Start Here
 
@@ -35,7 +35,7 @@ Choose the deployment path:
 - SQLite or PostgreSQL storage: read [`references/database.md`](references/database.md)
 - Profile seeding, subscription-backed Codex profiles, shell review policy, and shell sandbox policy: read [`references/profiles.md`](references/profiles.md)
 - Third-party capability plugin installation and manifest deployment: read [`references/plugins.md`](references/plugins.md)
-- Bridge deployment: read [`references/bridge/overview.md`](references/bridge/overview.md) and [`references/bridge/lark.md`](references/bridge/lark.md)
+- Bridge deployment: read [`references/bridge/overview.md`](references/bridge/overview.md), [`references/bridge/github.md`](references/bridge/github.md), and [`references/bridge/lark.md`](references/bridge/lark.md)
 - Schedules and heartbeat: read [`references/schedules-heartbeat.md`](references/schedules-heartbeat.md)
 - Session agency: read [`references/agency.md`](references/agency.md)
 - Session/run pruning: read [`references/operations.md#session-and-run-pruning`](references/operations.md#session-and-run-pruning)
@@ -101,8 +101,9 @@ Every deployment needs:
 | Profiles                  | [`references/profiles.md`](references/profiles.md)                                       | You seed profiles, manage execution profile configuration, tune shell review, or configure shell sandbox policy |
 | Capability plugins        | [`references/plugins.md`](references/plugins.md)                                         | You install trusted plugin packages, deploy the manifest, or build a derived service image                      |
 | Bridge overview           | [`references/bridge/overview.md`](references/bridge/overview.md)                         | You configure bridge dispatch, adapter enablement, and event-to-run routing                                     |
+| GitHub bridge             | [`references/bridge/github.md`](references/bridge/github.md)                             | You connect an ordinary GitHub account through outbound notification polling                                    |
 | Lark bridge               | [`references/bridge/lark.md`](references/bridge/lark.md)                                 | You connect Lark/Feishu events to YA Claw                                                                       |
-| Bridge operations         | [`references/bridge/operations.md`](references/bridge/operations.md)                     | You verify embedded bridge startup, Lark ingress, dedupe, profiles, and workspace replies                       |
+| Bridge operations         | [`references/bridge/operations.md`](references/bridge/operations.md)                     | You verify embedded bridge startup, GitHub/Lark ingress, dedupe, profiles, and workspace replies                |
 | Schedules and heartbeat   | [`references/schedules-heartbeat.md`](references/schedules-heartbeat.md)                 | You configure cron schedules, heartbeat guidance, timer dispatchers, and timer operations                       |
 | Session agency            | [`references/agency.md`](references/agency.md)                                           | You configure proactive agency, agency signals, paired agency sessions, and agency operations                   |
 | Operations                | [`references/operations.md`](references/operations.md)                                   | You need health checks, logs, pruning, upgrades, backup, restore, or troubleshooting                            |

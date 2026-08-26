@@ -552,6 +552,19 @@ class WorkflowEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class BridgeCursorRecord(Base):
+    __tablename__ = "bridge_cursors"
+    __table_args__ = (UniqueConstraint("adapter", "tenant_key", "cursor_key", name="uq_bridge_cursors_scope"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    adapter: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    cursor_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    cursor_value: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class BridgeConversationRecord(Base):
     __tablename__ = "bridge_conversations"
     __table_args__ = (

@@ -172,6 +172,14 @@ class ClawSettings(BaseSettings):
     workspace_env_vars: str = ""
     bridge_dispatch_mode: BridgeDispatchMode = BridgeDispatchMode.EMBEDDED
     bridge_enabled_adapters: str = ""
+    bridge_github_enabled: bool = False
+    bridge_github_token: SecretStr | None = None
+    bridge_github_api_url: str = "https://api.github.com"
+    bridge_github_allowed_senders: str = ""
+    bridge_github_default_profile: str | None = None
+    bridge_github_poll_interval_seconds: PositiveInt = 60
+    bridge_github_initial_lookback_seconds: int = Field(default=0, ge=0)
+    bridge_github_mark_read: bool = True
     bridge_lark_enabled: bool = False
     bridge_lark_app_id: str | None = None
     bridge_lark_app_secret: SecretStr | None = None
@@ -379,9 +387,24 @@ class ClawSettings(BaseSettings):
     def resolved_bridge_enabled_adapters(self) -> set[BridgeAdapterType]:
         raw_adapters = [item.strip() for item in self.bridge_enabled_adapters.split(",") if item.strip()]
         resolved_adapters = {BridgeAdapterType(adapter) for adapter in raw_adapters}
+        if self.bridge_github_enabled:
+            resolved_adapters.add(BridgeAdapterType.GITHUB)
         if self.bridge_lark_enabled:
             resolved_adapters.add(BridgeAdapterType.LARK)
         return resolved_adapters
+
+    @property
+    def resolved_bridge_github_allowed_senders(self) -> set[str]:
+        senders = {
+            item.strip().casefold() for item in self.bridge_github_allowed_senders.split(",") if item.strip() != ""
+        }
+        return {"*"} if "*" in senders else senders
+
+    @property
+    def resolved_bridge_github_profile(self) -> str:
+        if isinstance(self.bridge_github_default_profile, str) and self.bridge_github_default_profile.strip() != "":
+            return self.bridge_github_default_profile.strip()
+        return self.default_profile
 
     @property
     def resolved_bridge_lark_event_types(self) -> list[str]:
@@ -410,11 +433,23 @@ class ClawSettings(BaseSettings):
         return self.resolved_workspace_dir / "HEARTBEAT.md"
 
     @property
+    def bridge_github_token_value(self) -> str | None:
+        if self.bridge_github_token is None:
+            return None
+        normalized_value = self.bridge_github_token.get_secret_value().strip()
+        return normalized_value or None
+
+    @property
     def bridge_lark_app_secret_value(self) -> str | None:
         if self.bridge_lark_app_secret is None:
             return None
         normalized_value = self.bridge_lark_app_secret.get_secret_value().strip()
         return normalized_value or None
+
+    @property
+    def resolved_github_cli_environment(self) -> dict[str, str]:
+        token = self.bridge_github_token_value
+        return {"GH_TOKEN": token} if token is not None else {}
 
     @property
     def resolved_lark_cli_environment(self) -> dict[str, str]:
@@ -459,6 +494,7 @@ class ClawSettings(BaseSettings):
         return {
             **self.resolved_lark_cli_environment,
             **self.resolved_forwarded_workspace_environment,
+            **self.resolved_github_cli_environment,
         }
 
     @property

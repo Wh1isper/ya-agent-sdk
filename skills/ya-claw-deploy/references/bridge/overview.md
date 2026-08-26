@@ -8,7 +8,7 @@ Run bridges in embedded mode for current deployments:
 
 ```env
 YA_CLAW_BRIDGE_DISPATCH_MODE=embedded
-YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
+YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github,lark
 ```
 
 Embedded mode starts `BridgeSupervisor` in the same HTTP server lifespan as `ExecutionSupervisor`. Enabled adapters run as background tasks inside the YA Claw service process and submit bridge-triggered runs through the normal session/run controllers.
@@ -17,7 +17,7 @@ Embedded mode starts `BridgeSupervisor` in the same HTTP server lifespan as `Exe
 
 | Mode       | Behavior                                                                                                     | Deployment use                                                                 |
 | ---------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `embedded` | Starts `BridgeSupervisor` with the HTTP server and runs enabled adapters inside the YA Claw service lifespan | Standard production path for the current built-in bridge adapter               |
+| `embedded` | Starts `BridgeSupervisor` with the HTTP server and runs enabled adapters inside the YA Claw service lifespan | Standard production path for the built-in bridge adapters                      |
 | `manual`   | Starts the HTTP server and leaves bridge adapter lifecycle to a separate operator-managed path               | Separation model for external bridge workers and future operator-managed flows |
 
 The current bridge CLI surface is placeholder-oriented:
@@ -28,17 +28,17 @@ uv run --package ya-claw ya-claw bridge run lark
 uv run --package ya-claw ya-claw bridge serve lark
 ```
 
-Use `embedded` for deployed Lark ingress until the manual worker commands own adapter startup and supervision.
+Use `embedded` for deployed GitHub or Lark ingress until the manual worker commands own adapter startup and supervision.
 
 ## Adapter Enablement
 
-Bridge adapter types are enumerated by `BridgeAdapterType`. The current built-in adapter is `lark`.
+Bridge adapter types are enumerated by `BridgeAdapterType`. The built-in adapters are `github` and `lark`.
 
 ```env
-YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
+YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github,lark
 ```
 
-`YA_CLAW_BRIDGE_LARK_ENABLED=true` is a compatibility switch that also enables the Lark adapter. Prefer `YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark` for new deployments.
+`YA_CLAW_BRIDGE_GITHUB_ENABLED=true` and `YA_CLAW_BRIDGE_LARK_ENABLED=true` are compatibility switches that also enable their adapters. Prefer `YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github,lark` for new deployments.
 
 ## Event Pipeline
 
@@ -68,7 +68,7 @@ Bridge-created sessions and runs use `TriggerType.BRIDGE`. Runs created from bri
 
 ## Profiles
 
-Bridge conversations resolve a profile when the first session is created. For Lark, `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE` overrides the service default profile. When it is empty, YA Claw uses `YA_CLAW_DEFAULT_PROFILE`, which defaults to `default`.
+Bridge conversations resolve a profile when the first session is created. `YA_CLAW_BRIDGE_GITHUB_DEFAULT_PROFILE` and `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE` override the service default for their adapters. When either value is empty, YA Claw uses `YA_CLAW_DEFAULT_PROFILE`, which defaults to `default`.
 
 Seed or pre-create the selected execution profile before enabling bridge traffic. See [`../profiles.md`](../profiles.md).
 
@@ -91,9 +91,9 @@ Schedule and heartbeat runs are unattended automation. YA Claw runs them with un
 
 ## Workspace Reply Path
 
-Bridge adapters ingest events and create runs. Agents perform replies and follow-up actions from the workspace using adapter-specific CLIs or tools. For Lark, the agent prompt includes the source message ID and a recommended `lark-cli im +messages-reply` command shape.
+Bridge adapters ingest events and create runs. Agents perform replies and follow-up actions from the workspace using adapter-specific CLIs or tools. For GitHub, the prompt includes repository and Issue/PR identity plus recommended `gh view` and `gh comment` command shapes. For Lark, it includes the source message ID and a recommended `lark-cli im +messages-reply` command shape.
 
-Workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from explicit process environment values when set. YA Claw falls back to Lark bridge app settings for workspace credential injection. Additional workspace environment values are forwarded by listing process env names in `YA_CLAW_WORKSPACE_ENV_VARS`.
+Workspace environments receive built-in `GH_TOKEN` from `YA_CLAW_BRIDGE_GITHUB_TOKEN`, plus built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from explicit process environment values or Lark bridge settings. Additional workspace environment values are forwarded by listing process env names in `YA_CLAW_WORKSPACE_ENV_VARS`.
 
 ## Manual Inbound API
 
@@ -108,6 +108,7 @@ Both endpoints use the same database-backed controller path as embedded bridge m
 
 ## References
 
+- GitHub bridge: [`github.md`](github.md)
 - Lark bridge: [`lark.md`](lark.md)
 - Bridge operations: [`operations.md`](operations.md)
 - Environment settings: [`../environment.md`](../environment.md)

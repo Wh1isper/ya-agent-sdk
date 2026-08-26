@@ -430,3 +430,54 @@ def test_settings_workspace_environment_combines_lark_alias_and_explicit_forward
         "LARK_APP_SECRET": "secret-value",
         "MY_TOOL_API_KEY": "tool-secret",
     }
+
+
+def test_settings_resolves_github_bridge_and_workspace_token() -> None:
+    github_token = "github-token"  # noqa: S105
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_enabled_adapters="github",
+        bridge_github_token=github_token,
+        bridge_github_allowed_senders=" Alice,BOB,alice ",
+        bridge_github_default_profile="github-profile",
+        _env_file=None,
+    )
+
+    assert settings.resolved_bridge_enabled_adapters == {BridgeAdapterType.GITHUB}
+    assert settings.resolved_bridge_github_allowed_senders == {"alice", "bob"}
+    assert settings.resolved_bridge_github_profile == "github-profile"
+    assert settings.bridge_github_token_value == github_token
+    assert settings.resolved_github_cli_environment == {"GH_TOKEN": github_token}
+    assert settings.resolved_workspace_environment["GH_TOKEN"] == github_token
+
+
+def test_settings_github_bridge_token_overrides_forwarded_host_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GH_TOKEN", "host-token")
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_github_token="bridge-token",  # noqa: S106
+        workspace_env_vars="GH_TOKEN",
+        _env_file=None,
+    )
+
+    assert settings.resolved_workspace_environment["GH_TOKEN"] == "bridge-token"  # noqa: S105
+
+
+def test_settings_github_sender_wildcard_overrides_explicit_slugs() -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_github_allowed_senders="alice,*,bob",
+        _env_file=None,
+    )
+
+    assert settings.resolved_bridge_github_allowed_senders == {"*"}
+
+
+def test_settings_github_enabled_compatibility_flag() -> None:
+    settings = ClawSettings(
+        api_token="test-token",  # noqa: S106
+        bridge_github_enabled=True,
+        _env_file=None,
+    )
+
+    assert settings.resolved_bridge_enabled_adapters == {BridgeAdapterType.GITHUB}

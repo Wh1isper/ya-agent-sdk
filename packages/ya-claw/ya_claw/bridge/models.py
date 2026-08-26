@@ -10,6 +10,7 @@ from ya_claw.controller.models import ActiveInteraction
 
 
 class BridgeAdapterType(StrEnum):
+    GITHUB = "github"
     LARK = "lark"
 
 
