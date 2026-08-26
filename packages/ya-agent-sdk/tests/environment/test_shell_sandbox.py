@@ -142,7 +142,7 @@ def test_linux_bwrap_command_binds_mounts_and_network(
     assert ["--bind", str(mount.resolve()), str(mount.resolve())] == command[
         command.index("--bind") : command.index("--bind") + 3
     ]
-    assert command[-3:] == ["/bin/sh", "-lc", "pwd"]
+    assert command[-3:] == ["/bin/sh", "-c", "pwd"]
 
 
 def test_macos_seatbelt_profile_reflects_mount_modes(tmp_path: Path) -> None:
