@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,6 +13,7 @@ from ya_claw.bridge.github.models import (
 from ya_claw.bridge.models import BridgeAdapterType, BridgeInboundMessage
 
 _ATTRIBUTABLE_SUBJECT_REASONS = frozenset({"mention", "team_mention"})
+_MAX_SUBJECT_NOTIFICATION_DELAY = timedelta(minutes=1)
 
 
 def resolve_notification_resource(notification: GitHubNotification) -> GitHubNotificationResource | None:
@@ -53,8 +54,13 @@ def source_sender_is_attributable(
         return False
     created_at = _payload_timestamp(payload.get("created_at"))
     updated_at = _payload_timestamp(payload.get("updated_at"))
+    if created_at is None or updated_at is None or created_at != updated_at:
+        return False
     notification_at = _as_utc(notification.updated_at)
-    return created_at == notification_at and updated_at == notification_at
+    if latest_comment:
+        return created_at == notification_at
+    notification_delay = notification_at - created_at
+    return timedelta(0) <= notification_delay <= _MAX_SUBJECT_NOTIFICATION_DELAY
 
 
 def resolve_notification_source(

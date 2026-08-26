@@ -199,7 +199,7 @@ class GitHubBridgeAdapter(BridgeAdapter):
                 return payload, source_sender_is_attributable(
                     notification,
                     payload,
-                    latest_comment=True,
+                    latest_comment=not _same_source_url(latest_comment_url, notification.subject.url),
                 )
             except GitHubApiError as exc:
                 if exc.status_code not in {404, 410}:
@@ -306,6 +306,31 @@ def _tenant_key(api_url: str, user: GitHubUser) -> str:
     parsed = urlparse(api_url)
     host = parsed.netloc.casefold()
     return f"github:{host}:{user.id}"
+
+
+def _same_source_url(left: str, right: str | None) -> bool:
+    if right is None:
+        return False
+    try:
+        left_url = urlparse(left)
+        right_url = urlparse(right)
+        left_port = left_url.port or (443 if left_url.scheme.casefold() == "https" else None)
+        right_port = right_url.port or (443 if right_url.scheme.casefold() == "https" else None)
+    except ValueError:
+        return False
+    return (
+        left_url.scheme.casefold(),
+        left_url.hostname.casefold() if left_url.hostname is not None else None,
+        left_port,
+        left_url.path.rstrip("/"),
+        left_url.query,
+    ) == (
+        right_url.scheme.casefold(),
+        right_url.hostname.casefold() if right_url.hostname is not None else None,
+        right_port,
+        right_url.path.rstrip("/"),
+        right_url.query,
+    )
 
 
 def _serialize_cursor(value: datetime) -> str:

@@ -77,8 +77,9 @@ The adapter follows `subject.latest_comment_url` as an opaque API URL when prese
 
 Notification thread objects do not include the triggering actor. The adapter resolves the source object to apply `YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS`:
 
-- A newly created object from `latest_comment_url` is attributable to its `user`, `actor`, `sender`, or `author` only when its `created_at` and `updated_at` both match the notification version timestamp. A stale latest comment or edited source is not attributed to the current update.
-- A newly created subject body is attributable only for `mention` and `team_mention` reasons when its `created_at` and `updated_at` both match the notification version timestamp. Later subject edits are unattributable because the subject author may differ from the editor.
+- A newly created comment from a distinct `latest_comment_url` is attributable to its `user`, `actor`, `sender`, or `author` only when its `created_at` and `updated_at` exactly match the notification version timestamp. A recent but stale latest comment or an edited source is not attributed to the current update.
+- GitHub may set `latest_comment_url` to the subject URL for a newly created Issue. The adapter compares normalized same-origin source URLs and treats equivalent subject URLs as a subject rather than a comment.
+- A newly created subject body is attributable only for `mention` and `team_mention` reasons when `created_at` equals `updated_at` and the notification follows within one minute. This bounded delay applies only to subjects because GitHub may publish the creation notification seconds after creating the Issue or Pull Request. Later subject edits are unattributable because the subject author may differ from the editor.
 - Other subject-only notification reasons are not reliably attributable because the subject author may differ from the actor who changed assignment, state, labels, or review requests.
 
 With an explicit sender list, an unattributable notification is ignored. With `*`, sender attribution is not required and every Issue/PR notification snapshot is accepted, except an identified self-event.
