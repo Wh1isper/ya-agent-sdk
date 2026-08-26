@@ -55,7 +55,7 @@ def build_linux_bwrap_command(
     if bwrap is None:
         if policy.raw_shell_allowed:
             shell = shell_executable or default_platform_shell()
-            return [shell, "-lc", command]
+            return [shell, "-c", command]
         raise ShellExecutionError(command, stderr="bubblewrap is required for linux_bwrap_seccomp shell sandbox")
     args = [
         bwrap,
@@ -82,7 +82,7 @@ def build_linux_bwrap_command(
         args.extend([bind_arg, str(host_path), str(host_path)])
     args.extend(["--chdir", str(cwd)])
     shell = shell_executable or default_platform_shell()
-    args.extend([shell, "-lc", command])
+    args.extend([shell, "-c", command])
     return args
 
 
@@ -96,7 +96,7 @@ def build_macos_seatbelt_command(
     if not sandbox_exec.exists():
         if policy.raw_shell_allowed:
             shell = shell_executable or default_platform_shell()
-            return [shell, "-lc", command], lambda: None
+            return [shell, "-c", command], lambda: None
         raise ShellExecutionError(command, stderr="/usr/bin/sandbox-exec is required for macos_seatbelt shell sandbox")
     with tempfile.NamedTemporaryFile(
         "w",
@@ -113,7 +113,7 @@ def build_macos_seatbelt_command(
             profile_path.unlink()
 
     shell = shell_executable or default_platform_shell()
-    return [str(sandbox_exec), "-f", str(profile_path), shell, "-lc", command], cleanup
+    return [str(sandbox_exec), "-f", str(profile_path), shell, "-c", command], cleanup
 
 
 def shell_sandbox_diagnostics(policy: ShellSandboxRuntimePolicy) -> dict[str, Any]:
@@ -148,7 +148,7 @@ def default_platform_shell() -> str:
 def default_shell_command(command: str) -> list[str]:
     shell = default_platform_shell()
     if os.name == "posix":
-        return [shell, "-lc", command]
+        return [shell, "-c", command]
     return [shell, "/d", "/s", "/c", command]
 
 
