@@ -45,7 +45,7 @@ GitHub notifications are mutable thread snapshots rather than individual events.
 
 Later updates to one Issue or Pull Request therefore continue the same session while retaining distinct idempotency keys. The session omits a custom workspace binding and inherits `YA_CLAW_WORKSPACE_DIR` or the configured default mount set.
 
-The adapter follows `latest_comment_url` when available and attributes a newly created source only when its `created_at` and `updated_at` match the notification version timestamp. Stale comments and edited sources are unattributable. Subject-only `mention` and `team_mention` notifications can attribute the subject author only for a newly created subject with matching timestamps. Other subject-only reasons and later subject edits cannot reliably identify the actor; explicit sender allowlists reject them, while `*` accepts them.
+The adapter follows `latest_comment_url` when available. A distinct comment source is attributable only when its `created_at` and `updated_at` exactly match the notification timestamp, so recent but stale comments and edited comments remain unattributable. GitHub may return the subject URL itself as `latest_comment_url` for a newly created Issue; the adapter recognizes normalized equivalent URLs as the subject. Subject `mention` and `team_mention` notifications can attribute the subject author when `created_at` equals `updated_at` and the notification follows within one minute, accounting for GitHub's asynchronous subject-creation notification delay. The delay window never applies to distinct comments. Other subject-only reasons and later subject edits cannot reliably identify the actor; explicit sender allowlists reject them, while `*` accepts them.
 
 ## Polling and Cursor
 

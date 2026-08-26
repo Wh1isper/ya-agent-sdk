@@ -282,8 +282,8 @@ async def test_github_adapter_rejects_stale_comment_actor_and_authenticated_acco
             stale.subject.latest_comment_url or "": {
                 "id": 504,
                 "body": "older allowed comment",
-                "created_at": "2026-08-26T07:55:00Z",
-                "updated_at": "2026-08-26T07:55:00Z",
+                "created_at": "2026-08-26T07:59:30Z",
+                "updated_at": "2026-08-26T07:59:30Z",
                 "user": {"login": "alice", "id": 1, "type": "User"},
             },
             own.subject.latest_comment_url or "": {
@@ -356,6 +356,105 @@ async def test_github_adapter_attributes_new_subject_mention_to_subject_author(d
     await asyncio.wait_for(task, timeout=5)
 
     assert [message.sender_id for message in handler.messages] == ["alice"]
+
+
+async def test_github_adapter_attributes_delayed_new_issue_mention_when_latest_comment_is_subject(
+    db_engine: AsyncEngine,
+) -> None:
+    notification = _notification(
+        thread_id="25310933989",
+        reason="mention",
+        updated_at=datetime(2026, 8, 26, 13, 47, 29, tzinfo=UTC),
+        latest_comment=False,
+    )
+    assert notification.subject.url is not None
+    notification = notification.model_copy(
+        update={"subject": notification.subject.model_copy(update={"latest_comment_url": notification.subject.url})}
+    )
+    client = _FakeGitHubClient(
+        notifications=[notification],
+        sources={
+            notification.subject.url: {
+                "number": 7,
+                "title": "Testing",
+                "body": "@ya-claw-bot Can you see this?",
+                "created_at": "2026-08-26T13:47:08Z",
+                "updated_at": "2026-08-26T13:47:08Z",
+                "user": {"login": "Wh1isper", "id": 43375501, "type": "User"},
+            }
+        },
+        expected_mark_count=1,
+    )
+    handler = _RecordingHandler()
+    adapter = GitHubBridgeAdapter(
+        settings=ClawSettings(
+            api_token="test-token",  # noqa: S106
+            bridge_github_token="github-token",  # noqa: S106
+            bridge_github_allowed_senders="wh1isper",
+            bridge_github_poll_interval_seconds=300,
+            _env_file=None,
+        ),
+        handler=handler,
+        session_factory=create_session_factory(db_engine),
+        client=client,
+    )
+
+    task = asyncio.create_task(adapter.run())
+    await asyncio.wait_for(client.marked.wait(), timeout=5)
+    await adapter.stop()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert [message.sender_id for message in handler.messages] == ["Wh1isper"]
+
+
+async def test_github_adapter_treats_equivalent_subject_url_as_subject_for_sender_attribution(
+    db_engine: AsyncEngine,
+) -> None:
+    notification = _notification(
+        thread_id="25310933990",
+        reason="assign",
+        updated_at=datetime(2026, 8, 26, 13, 47, 8, tzinfo=UTC),
+        latest_comment=False,
+    )
+    assert notification.subject.url is not None
+    equivalent_subject_url = f"{notification.subject.url}/"
+    notification = notification.model_copy(
+        update={"subject": notification.subject.model_copy(update={"latest_comment_url": equivalent_subject_url})}
+    )
+    client = _FakeGitHubClient(
+        notifications=[notification],
+        sources={
+            equivalent_subject_url: {
+                "number": 7,
+                "title": "Testing",
+                "body": "@ya-claw-bot Can you see this?",
+                "created_at": "2026-08-26T13:47:08Z",
+                "updated_at": "2026-08-26T13:47:08Z",
+                "user": {"login": "Wh1isper", "id": 43375501, "type": "User"},
+            }
+        },
+        expected_mark_count=1,
+    )
+    handler = _RecordingHandler()
+    adapter = GitHubBridgeAdapter(
+        settings=ClawSettings(
+            api_token="test-token",  # noqa: S106
+            bridge_github_token="github-token",  # noqa: S106
+            bridge_github_allowed_senders="wh1isper",
+            bridge_github_poll_interval_seconds=300,
+            _env_file=None,
+        ),
+        handler=handler,
+        session_factory=create_session_factory(db_engine),
+        client=client,
+    )
+
+    task = asyncio.create_task(adapter.run())
+    await asyncio.wait_for(client.marked.wait(), timeout=5)
+    await adapter.stop()
+    await asyncio.wait_for(task, timeout=5)
+
+    assert handler.messages == []
 
 
 async def test_github_adapter_wildcard_accepts_unattributable_pull_request(db_engine: AsyncEngine) -> None:
