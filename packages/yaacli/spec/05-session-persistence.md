@@ -203,10 +203,14 @@ Controlled failure and shutdown may publish the SDK's safe recoverable subset. T
 preserves message history and resumable context as separate typed fields. Canonical model
 history follows the SDK's recoverable-message rules and is never reconstructed from UI
 events. The non-authoritative display projection independently retains observed tool
-invocations so interrupted activity remains visible after reattach. When cancellation
-lands between a native segment and checkpoint publication, the complete live bounded
-display projection takes precedence over the older stable checkpoint, preventing already
-observed tool invocations from being rolled back.
+invocations so interrupted activity remains visible after reattach. Cancellation
+acceptance freezes the complete live bounded projection before process-local worker
+cancellation begins. That frozen boundary takes precedence over an older stable
+checkpoint, including when cancellation lands between a native segment and checkpoint
+publication. Terminal UI reconciliation then rebuilds the active run only from the
+committed revision; transient transcript block IDs and tool-render caches are never used
+as a second recovery source. Observed tool starts remain replayable even if cancellation
+arrives before an argument chunk or result.
 
 ## Process-Local Subagents
 

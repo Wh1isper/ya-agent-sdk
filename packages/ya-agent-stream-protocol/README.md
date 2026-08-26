@@ -4,6 +4,10 @@ Shared stream protocol adapters between `ya-agent-sdk` and applications.
 
 The Python import package is `ya_agent_stream_protocol`.
 
+Compact AGUI replay drops redundant text/reasoning and tool-end scaffolding, but retains
+`TOOL_CALL_START` as an observed execution fact. A run interrupted before its first tool
+argument chunk must still be able to reconstruct the visible invocation.
+
 The package owns the shared protocol boundary between `ya-agent-sdk` and applications:
 
 - AGUI event adaptation

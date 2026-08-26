@@ -156,6 +156,71 @@ async def test_terminal_fallback_prefers_live_tool_projection_over_stable_checkp
         store.close()
 
 
+async def test_cancel_acceptance_freezes_display_projection_before_worker_settlement(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    live_projection = [
+        {"type": "RUN_STARTED", "runId": "run-live"},
+        {
+            "type": "TOOL_CALL_CHUNK",
+            "toolCallId": "visible-tool",
+            "toolCallName": "shell_exec",
+            "delta": '{"command":"pytest"}',
+        },
+    ]
+    worker = await LocalExecutionWorker.create(
+        store=store,
+        state_path=tmp_path / "coordinator.state",
+        active_runtime_id="test",
+        runtime_specs=[_runtime_spec(tmp_path, TestModel())],
+        display_projection_provider=lambda: live_projection,
+    )
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="cancel-projection-session")
+        run = service.accept_turn(session.session_id, ["run tools"], idempotency_key="tool-turn")
+
+        worker.coordinator.accept_cancel(run.logical_run_id, "user_interrupted")
+        live_projection.clear()
+        payload = worker.coordinator._stable_payload(run)
+
+        assert any(event.get("toolCallId") == "visible-tool" for event in payload.display_projection)
+        cancelling = store.get_run(run.logical_run_id)
+        assert cancelling is not None
+        await worker.coordinator._commit_cancelled(cancelling)
+        revision = store.get_revision_for_run(run.logical_run_id)
+        assert revision is not None
+        assert any(event.get("toolCallId") == "visible-tool" for event in revision.display_projection)
+        assert run.logical_run_id not in worker.coordinator._terminal_display_projection_snapshots
+    finally:
+        await worker.close()
+        store.close()
+
+
+async def test_cancel_without_display_provider_preserves_stable_projection(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    worker = await _create_worker(store, tmp_path, _runtime_spec(tmp_path, TestModel()))
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="cancel-without-provider")
+        run = service.accept_turn(session.session_id, ["run tools"], idempotency_key="tool-turn")
+        stable_projection = [
+            {"type": "RUN_STARTED", "runId": "stable-run"},
+            {
+                "type": "TOOL_CALL_START",
+                "toolCallId": "stable-tool",
+                "toolCallName": "shell_exec",
+            },
+        ]
+
+        worker.coordinator.accept_cancel(run.logical_run_id, "user_interrupted")
+
+        assert worker.coordinator._stable_terminal_display_projection(run, stable_projection) == stable_projection
+        assert run.logical_run_id not in worker.coordinator._terminal_display_projection_snapshots
+    finally:
+        await worker.close()
+        store.close()
+
+
 async def test_active_feature_input_is_applied_once_across_tool_nodes(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     marker = "unique-background-shell-completion"

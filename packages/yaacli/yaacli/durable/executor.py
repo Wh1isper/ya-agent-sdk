@@ -112,6 +112,7 @@ class LocalExecutionCoordinator:
         self._execution_runtimes: dict[str, LocalRuntime] = {}
         self._action_events: dict[str, asyncio.Event] = {}
         self._runtime_locks: dict[str, asyncio.Lock] = {}
+        self._terminal_display_projection_snapshots: dict[str, list[JsonValue]] = {}
         self._shutting_down = False
 
     @property
@@ -196,17 +197,28 @@ class LocalExecutionCoordinator:
         return terminal
 
     def accept_cancel(self, logical_run_id: str, reason: str) -> None:
-        """Durably accept cancellation before attempting process-local dispatch."""
+        """Durably accept cancellation and freeze its observed display boundary."""
         run = self.store.get_run(logical_run_id)
         if run is None:
             raise KeyError(logical_run_id)
         if run.terminal:
             return
+        projection: list[JsonValue] | None = None
+        if (
+            logical_run_id not in self._terminal_display_projection_snapshots
+            and self.display_projection_provider is not None
+        ):
+            try:
+                projection = list(self.display_projection_provider())
+            except Exception:
+                logger.exception("Failed to freeze display projection for cancelled run %s", logical_run_id)
         self.store.set_run_status(
             logical_run_id,
             LogicalRunStatus.cancelling,
             cancellation_reason=reason,
         )
+        if projection is not None:
+            self._terminal_display_projection_snapshots[logical_run_id] = projection
 
     async def cancel(self, logical_run_id: str, reason: str) -> None:
         self.accept_cancel(logical_run_id, reason)
@@ -645,6 +657,7 @@ class LocalExecutionCoordinator:
             terminal_status=LogicalRunStatus.cancelled,
             event_type="run_cancelled",
         )
+        self._terminal_display_projection_snapshots.pop(run.logical_run_id, None)
         return terminal
 
     async def _commit_interrupted(
@@ -761,20 +774,23 @@ class LocalExecutionCoordinator:
         run: LogicalRunRecord,
         stable: Sequence[JsonValue],
     ) -> list[JsonValue]:
-        projection = list(stable)
-        if self.display_projection_provider is not None:
-            live = list(self.display_projection_provider())
-            if live:
-                # The provider is the complete bounded TUI projection, not a
-                # delta. Prefer it so cancellation between native segment
-                # checkpoints cannot roll visible tool calls back to the last
-                # stable checkpoint.
-                projection = live
+        projection = self._terminal_display_projection(run)
+        if projection is None:
+            projection = list(stable)
         return self._with_durable_steering_projection(run, projection)
 
     def _current_terminal_display_projection(self, run: LogicalRunRecord) -> list[JsonValue]:
-        current = list(self.display_projection_provider()) if self.display_projection_provider is not None else []
+        current = self._terminal_display_projection(run) or []
         return self._with_durable_steering_projection(run, current)
+
+    def _terminal_display_projection(self, run: LogicalRunRecord) -> list[JsonValue] | None:
+        frozen = self._terminal_display_projection_snapshots.get(run.logical_run_id)
+        if frozen is not None:
+            return list(frozen)
+        if self.display_projection_provider is None:
+            return None
+        current = list(self.display_projection_provider())
+        return current or None
 
     def _with_durable_steering_projection(
         self,
