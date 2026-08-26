@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ya_claw.bridge.base import BridgeAdapter, BridgeMessageHandler
 from ya_claw.bridge.controller import BridgeController
+from ya_claw.bridge.github.adapter import GitHubBridgeAdapter
 from ya_claw.bridge.lark.adapter import LarkBridgeAdapter
 from ya_claw.bridge.models import BridgeAdapterType, BridgeDispatchResult, BridgeInboundAction, BridgeInboundMessage
 from ya_claw.config import ClawSettings
@@ -151,9 +152,15 @@ def _build_adapter(
     *,
     settings: ClawSettings,
     handler: BridgeMessageHandler,
+    session_factory: async_sessionmaker[AsyncSession],
     notification_hub: NotificationHub | None = None,
-    session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> BridgeAdapter:
+    if adapter_type == BridgeAdapterType.GITHUB:
+        return GitHubBridgeAdapter(
+            settings=settings,
+            handler=handler,
+            session_factory=session_factory,
+        )
     if adapter_type == BridgeAdapterType.LARK:
         return LarkBridgeAdapter(
             settings=settings,

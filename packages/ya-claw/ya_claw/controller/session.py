@@ -46,6 +46,7 @@ from ya_claw.runtime_state import InMemoryRuntimeState
 from ya_claw.workspace.models import metadata_with_workspace
 
 _DEFAULT_SESSION_RUNS_LIMIT = 20
+_SESSION_SUBMIT_DELIVERY_KEYS = "_session_submit_delivery_keys"
 _MAX_SESSION_RUNS_LIMIT = 100
 
 
@@ -169,9 +170,22 @@ class SessionController:
         active_run = await self._active_run_record(db_session, record)
         if isinstance(active_run, RunRecord):
             if active_run.status == RunStatus.QUEUED:
+                existing_delivery_keys = list(active_run.run_metadata.get(_SESSION_SUBMIT_DELIVERY_KEYS) or [])
+                if request.idempotency_key is not None and request.idempotency_key in existing_delivery_keys:
+                    return SessionSubmitResponse(
+                        session_id=active_run.session_id,
+                        run_id=active_run.id,
+                        delivery="merged",
+                        status=active_run.status,
+                        run=run_detail_from_record(active_run),
+                    )
                 input_payload = [part.model_dump(mode="json") for part in request.input_parts]
                 active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
-                active_run.run_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
+                merged_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
+                if request.idempotency_key is not None:
+                    existing_delivery_keys.append(request.idempotency_key)
+                    merged_metadata[_SESSION_SUBMIT_DELIVERY_KEYS] = existing_delivery_keys
+                active_run.run_metadata = merged_metadata
                 await db_session.commit()
                 await db_session.refresh(active_run)
                 return SessionSubmitResponse(
@@ -181,18 +195,19 @@ class SessionController:
                     status=active_run.status,
                     run=run_detail_from_record(active_run),
                 )
-            input_payload = [part.model_dump(mode="json") for part in request.input_parts]
-            active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
-            if request.metadata:
-                active_run.run_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
-            await db_session.commit()
-            await db_session.refresh(active_run)
             control = await self._run_controller.steer(
                 db_session,
                 runtime_state,
                 active_run.id,
-                SteerRequest(input_parts=request.input_parts),
+                SteerRequest(input_parts=request.input_parts, idempotency_key=request.idempotency_key),
             )
+            if control.accepted:
+                input_payload = [part.model_dump(mode="json") for part in request.input_parts]
+                active_run.input_parts = [*list(active_run.input_parts or []), *input_payload]
+                if request.metadata:
+                    active_run.run_metadata = _merge_submit_metadata(active_run.run_metadata, request.metadata)
+                await db_session.commit()
+                await db_session.refresh(active_run)
             return SessionSubmitResponse(
                 session_id=control.session_id,
                 run_id=control.run_id,
@@ -213,6 +228,7 @@ class SessionController:
                 dispatch_mode=request.dispatch_mode,
                 trigger_type=request.trigger_type,
             ),
+            source_delivery_id=request.idempotency_key,
         )
         return SessionSubmitResponse(
             session_id=session_id,
@@ -229,6 +245,8 @@ class SessionController:
         runtime_state: InMemoryRuntimeState,
         record: SessionRecord,
         request: SessionRunCreateRequest,
+        *,
+        source_delivery_id: str | None = None,
     ) -> RunDetail:
         run_metadata = dict(request.metadata)
         if request.reset_state:
@@ -248,6 +266,7 @@ class SessionController:
                 workspace=request.workspace,
                 dispatch_mode=request.dispatch_mode,
             ),
+            source_delivery_id=source_delivery_id,
         )
 
     async def _active_run_record(self, db_session: AsyncSession, record: SessionRecord) -> RunRecord | None:

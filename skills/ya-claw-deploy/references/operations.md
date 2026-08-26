@@ -66,6 +66,15 @@ For embedded bridges, use the bridge-specific operations guide: [`bridge/operati
 
 Check service logs for bridge supervisor startup, adapter task creation, inbound dedupe results, conversation IDs, session IDs, and run IDs.
 
+For GitHub deployments, verify the classic PAT, exact sender allowlist, outbound API access, and workspace `GH_TOKEN`:
+
+```env
+YA_CLAW_BRIDGE_DISPATCH_MODE=embedded
+YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github
+YA_CLAW_BRIDGE_GITHUB_TOKEN=replace-with-classic-pat
+YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS=alice,bob
+```
+
 For Lark deployments, verify service ingress credentials and workspace reply credentials:
 
 ```env
@@ -86,6 +95,7 @@ docker ps --filter 'name=ya-claw-run'
 docker logs ya-claw-session-<session-short>-g<generation>
 docker exec -it ya-claw-session-<session-short>-g<generation> pwd
 docker exec -it ya-claw-session-<session-short>-g<generation> ls -la /workspace
+docker exec -it ya-claw-session-<session-short>-g<generation> gh --version
 docker exec -it ya-claw-session-<session-short>-g<generation> lark-cli --version
 ```
 

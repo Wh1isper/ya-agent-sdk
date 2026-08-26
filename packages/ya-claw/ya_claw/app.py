@@ -358,7 +358,11 @@ class ClawApplication:
         if not self.settings.oauth_refresh_enabled or profile_resolver is None:
             return None
         models: set[str] = set()
-        for profile_name in {self.settings.default_profile, self.settings.bridge_lark_default_profile}:
+        for profile_name in {
+            self.settings.default_profile,
+            self.settings.bridge_github_default_profile,
+            self.settings.bridge_lark_default_profile,
+        }:
             if profile_name is None or profile_name.strip() == "":
                 continue
             try:

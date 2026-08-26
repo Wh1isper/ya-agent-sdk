@@ -232,14 +232,11 @@ Bridge deployment dispatch and run execution dispatch are separate runtime conce
 
 With the default `embedded` dispatch, one YA Claw service process supervises `ExecutionSupervisor`, `ScheduleDispatcher`, `HeartbeatDispatcher`, and `BridgeSupervisor`. Each enabled adapter runs as a long-lived async task under `BridgeSupervisor`. Bridge adapters submit inbound events through the same session/run controller path used by HTTP requests, so bridge ingress behaves as a self-request inside the service process before execution dispatch.
 
-The built-in Lark adapter receives the comma-separated event allowlist from `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`. The default allowlist covers `im.chat.member.bot.added_v1`, `im.chat.member.user.added_v1`, `im.message.receive_v1`, and `drive.notice.comment_add_v1`. Message receive events map `(adapter, tenant_key, chat_id)` to one session. Other accepted events use `chat_id` when present and fall back to a stable event or Drive conversation key. YA Claw stores inbound event records for idempotency and creates one queued bridge-triggered run per accepted event. The agent replies or acts from the workspace with `lark-cli`; workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from process variables or the configured Lark bridge app settings, plus variables explicitly listed in `YA_CLAW_WORKSPACE_ENV_VARS`.
+The built-in Lark adapter receives the comma-separated event allowlist from `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`. The default allowlist covers `im.chat.member.bot.added_v1`, `im.chat.member.user.added_v1`, `im.message.receive_v1`, and `drive.notice.comment_add_v1`. Message receive events map `(adapter, tenant_key, chat_id)` to one session. Other accepted events use `chat_id` when present and fall back to a stable event or Drive conversation key. The agent replies or acts from the workspace with `lark-cli`; workspace environments receive built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases from process variables or the configured Lark bridge app settings.
 
-Bridge adapter types are enumerated so future adapters can be added with the same controller and supervisor foundation. A bridge adapter may target platforms such as:
+The built-in GitHub adapter uses outbound-only Notifications REST polling for an ordinary account with a classic PAT. It scans all notification reasons, routes only Issue and Pull Request subjects, applies the case-insensitive exact sender allowlist from `YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS`, and treats `*` as unrestricted sender policy. Repository ID plus Issue/PR kind and number form the conversation key, so each resource maps to one durable session that inherits the configured default workspace. Notification thread ID plus `updated_at` form the versioned event/message ID. A durable `bridge_cursors` row and a 60-second replay overlap make restarts safe; accepted, rejected, and unsupported threads may be marked read, but remote read state is not the delivery authority. The workspace receives the classic PAT as `GH_TOKEN` and uses the bundled `gh` CLI. The complete contract is defined in [GitHub Notification Bridge](14-github-bridge.md).
 
-- Lark
-- Slack
-- Discord
-- Telegram
+Both adapters store inbound event records for idempotency and use the same conversation/session/run controller path. Additional adapters can be added on the same controller and supervisor foundation.
 
 ## Docker Alignment
 

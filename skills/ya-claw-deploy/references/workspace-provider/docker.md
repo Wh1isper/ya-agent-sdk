@@ -144,9 +144,10 @@ YA_CLAW_HOST_UID=<configured uid>
 YA_CLAW_HOST_GID=<configured gid>
 ```
 
-Workspace environment values are injected when configured. Built-in Lark aliases are available for `lark-cli`, and additional process env values are forwarded by name:
+Workspace environment values are injected when configured. The GitHub bridge token is available to `gh` as `GH_TOKEN`, built-in Lark aliases are available for `lark-cli`, and additional process env values are forwarded by name:
 
 ```env
+GH_TOKEN=replace-with-classic-pat
 LARK_APP_ID=cli_xxx
 LARK_APP_SECRET=replace-with-secret
 MY_TOOL_API_KEY=replace-with-tool-key
@@ -181,8 +182,9 @@ The official workspace image contains:
 - Python, `pip`, and `venv`
 - Node.js and Corepack
 - Git, OpenSSH, curl, wget, jq, unzip, zip, and shell utilities
+- GitHub CLI (`gh`)
 - `lark-cli`
-- bundled Lark and skill-creator skills copied into `/workspace/.agents/skills/`
+- bundled workspace skills copied into `/workspace/.agents/skills/`
 
 ## Verification
 
@@ -200,6 +202,7 @@ Inspect a session container:
 docker inspect ya-claw-session-<session-short>-g<generation> --format '{{ json .Mounts }}'
 docker exec -it ya-claw-session-<session-short>-g<generation> pwd
 docker exec -it ya-claw-session-<session-short>-g<generation> ls -la /workspace
+docker exec -it ya-claw-session-<session-short>-g<generation> gh --version
 docker exec -it ya-claw-session-<session-short>-g<generation> lark-cli --version
 ```
 

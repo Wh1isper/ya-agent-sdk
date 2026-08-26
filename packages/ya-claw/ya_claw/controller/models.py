@@ -280,6 +280,7 @@ class SteerRequest(BaseModel):
 
 class SessionSubmitRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=255)
     restore_from_run_id: str | None = None
     reset_state: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)

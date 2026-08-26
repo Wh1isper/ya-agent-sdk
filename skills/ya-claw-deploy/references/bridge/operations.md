@@ -1,6 +1,6 @@
 # Bridge Operations
 
-Use these checks when enabling embedded bridges, verifying Lark ingress, or troubleshooting bridge-triggered runs.
+Use these checks when enabling embedded bridges, verifying GitHub or Lark ingress, or troubleshooting bridge-triggered runs.
 
 ## Startup Checks
 
@@ -22,12 +22,35 @@ Expected embedded bridge settings:
 
 ```env
 YA_CLAW_BRIDGE_DISPATCH_MODE=embedded
-YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
+YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github,lark
+YA_CLAW_BRIDGE_GITHUB_TOKEN=replace-with-classic-pat
+YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS=alice,bob
 YA_CLAW_BRIDGE_LARK_APP_ID=cli_xxx
 YA_CLAW_BRIDGE_LARK_APP_SECRET=replace-with-app-secret
 ```
 
-Inspect service logs for `BridgeSupervisor` startup, adapter task creation, Lark websocket connection messages, inbound event handling, dedupe results, conversation IDs, session IDs, and run IDs.
+Inspect service logs for `BridgeSupervisor` startup, adapter task creation, GitHub polling or Lark websocket connection messages, inbound event handling, dedupe results, conversation IDs, session IDs, and run IDs.
+
+## GitHub Credential and Polling Checks
+
+The service process needs an ordinary account classic PAT and a non-empty sender policy:
+
+```env
+YA_CLAW_BRIDGE_GITHUB_TOKEN=replace-with-classic-pat
+YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS=alice,bob
+```
+
+Use `notifications` scope for the notification inbox and `repo` when private repositories must be inspected or modified. Fine-grained PATs are not supported by GitHub's Notifications REST endpoints. `*` accepts every sender; explicit login entries reject notifications whose actor cannot be reliably attributed.
+
+The same token is injected into workspaces as `GH_TOKEN`. Check the workspace container:
+
+```bash
+docker exec -it ya-claw-session-<session-short>-g<generation> gh --version
+docker exec -it ya-claw-session-<session-short>-g<generation> sh -lc 'test -n "$GH_TOKEN"'
+docker exec -it ya-claw-session-<session-short>-g<generation> gh auth status
+```
+
+Confirm outbound HTTPS access to `YA_CLAW_BRIDGE_GITHUB_API_URL`. Logs should identify the authenticated account, tenant, sender policy, and effective polling interval. The adapter scans all notification reasons but routes only Issue and Pull Request subjects.
 
 ## Lark Credential Checks
 
@@ -69,6 +92,7 @@ Align the Lark app subscription list with the YA Claw allowlist so each intended
 Bridge-created sessions require a valid profile:
 
 ```env
+YA_CLAW_BRIDGE_GITHUB_DEFAULT_PROFILE=default
 YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE=default
 YA_CLAW_PROFILE_SEED_FILE=/etc/ya-claw/profiles.yaml
 YA_CLAW_AUTO_SEED_PROFILES=true
@@ -87,13 +111,13 @@ Bridge dedupe uses these keys:
 1. `(adapter, tenant_key, event_id)`
 2. `(adapter, tenant_key, external_message_id)`
 
-Repeated Lark delivery should reuse the existing bridge event result. Inspect logs and database rows for `duplicate`, `submitted`, `queued`, `steered`, `deferred`, and `failed` statuses.
+Repeated Lark delivery or an overlapping GitHub notification scan should reuse the existing bridge event result. GitHub uses notification thread ID plus `updated_at` as both event and message ID, so later versions of one thread remain distinct. Inspect logs and database rows for `duplicate`, `submitted`, `queued`, `steered`, `deferred`, and `failed` statuses.
 
 ## Conversation Checks
 
-Lark message events map chat conversations to YA Claw sessions by `(adapter, tenant_key, chat_id)`. Drive and generic events use stable fallback keys for payloads that carry Drive tokens or event IDs.
+GitHub maps repository ID plus Issue/PR kind and number to one conversation. Lark message events map chat conversations by `(adapter, tenant_key, chat_id)`; Drive and generic events use stable fallback keys for payloads that carry Drive tokens or event IDs.
 
-A new chat creates one bridge conversation row and one YA Claw session. Later events with the same conversation key create runs under the same session, steer an active run, or defer input when the active run is waiting on HITL.
+A new conversation creates one bridge conversation row and one YA Claw session. Later events with the same key create runs under the same session, steer an active run, or defer input when the active run is waiting on HITL. GitHub sessions omit a custom workspace binding and inherit the configured default workspace.
 
 ## Troubleshooting
 
@@ -103,10 +127,22 @@ Confirm embedded dispatch and enabled adapters:
 
 ```env
 YA_CLAW_BRIDGE_DISPATCH_MODE=embedded
-YA_CLAW_BRIDGE_ENABLED_ADAPTERS=lark
+YA_CLAW_BRIDGE_ENABLED_ADAPTERS=github,lark
 ```
 
 Restart the service and inspect logs for bridge lifecycle messages.
+
+### GitHub Adapter Cannot Authenticate or Poll
+
+Confirm `YA_CLAW_BRIDGE_GITHUB_TOKEN` is a classic PAT, not a fine-grained PAT, and that it has `notifications` or `repo` scope. Check outbound access to `YA_CLAW_BRIDGE_GITHUB_API_URL`. Bootstrap and poll failures are retried on the configured interval.
+
+### GitHub Notification Does Not Create a Run
+
+Confirm the notification subject is an Issue or Pull Request. With an explicit sender list, confirm the latest source has an attributable `user.login` that matches exactly after case folding. Subject-only assignment, state-change, or review-request notifications may be unattributable; use `*` only when accepting every sender is intended. Check `/api/v1/bridges/events?adapter=github` and service logs.
+
+### GitHub Agent Action Fails
+
+Run `gh auth status` inside the session workspace container. Confirm PAT repository access and scopes, then recreate the container if the token changed. The agent prompt tells the agent to inspect the current Issue/PR before acting because notifications may coalesce updates.
 
 ### Lark Adapter Fails on Startup
 
@@ -154,5 +190,6 @@ Manual bridge CLI commands are placeholders for separated worker flows. Use the 
 ## References
 
 - Bridge overview: [`overview.md`](overview.md)
+- GitHub bridge: [`github.md`](github.md)
 - Lark bridge: [`lark.md`](lark.md)
 - General operations: [`../operations.md`](../operations.md)

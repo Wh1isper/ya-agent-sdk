@@ -168,21 +168,29 @@ This mode deletes old `run-store/{run_id}` directories and keeps `sessions`, `ru
 
 ## Bridge Settings
 
-| Variable                              | Purpose                                                                       |
-| ------------------------------------- | ----------------------------------------------------------------------------- |
-| `YA_CLAW_BRIDGE_DISPATCH_MODE`        | `embedded` or `manual`; default `embedded`                                    |
-| `YA_CLAW_BRIDGE_ENABLED_ADAPTERS`     | Comma-separated adapter list, currently `lark`                                |
-| `YA_CLAW_BRIDGE_LARK_ENABLED`         | Compatibility switch that also enables the Lark adapter                       |
-| `YA_CLAW_BRIDGE_LARK_APP_ID`          | Lark/Feishu app ID for bridge websocket ingress                               |
-| `YA_CLAW_BRIDGE_LARK_APP_SECRET`      | Lark/Feishu app secret for bridge websocket ingress                           |
-| `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE` | Profile used for Lark-triggered runs; falls back to `YA_CLAW_DEFAULT_PROFILE` |
-| `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`     | Accepted Lark event allowlist; include `card.action.trigger` for HITL buttons |
-| `YA_CLAW_BRIDGE_LARK_REPLY_IDENTITY`  | `bot` or `user`                                                               |
-| `YA_CLAW_BRIDGE_LARK_DOMAIN`          | Lark/Feishu OpenAPI domain                                                    |
-| `LARK_APP_ID`                         | Workspace `lark-cli` app ID; overrides bridge-derived workspace value         |
-| `LARK_APP_SECRET`                     | Workspace `lark-cli` app secret; overrides bridge-derived workspace value     |
+| Variable                                         | Purpose                                                                                        |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `YA_CLAW_BRIDGE_DISPATCH_MODE`                   | `embedded` or `manual`; default `embedded`                                                     |
+| `YA_CLAW_BRIDGE_ENABLED_ADAPTERS`                | Comma-separated built-in adapter list: `github`, `lark`                                        |
+| `YA_CLAW_BRIDGE_GITHUB_ENABLED`                  | Compatibility switch that also enables the GitHub adapter                                      |
+| `YA_CLAW_BRIDGE_GITHUB_TOKEN`                    | Ordinary account classic PAT; also injected into workspaces as `GH_TOKEN`                      |
+| `YA_CLAW_BRIDGE_GITHUB_API_URL`                  | GitHub REST API origin; default `https://api.github.com`                                       |
+| `YA_CLAW_BRIDGE_GITHUB_ALLOWED_SENDERS`          | Exact case-insensitive login list, or `*`; required when GitHub bridge is enabled              |
+| `YA_CLAW_BRIDGE_GITHUB_DEFAULT_PROFILE`          | Profile used for GitHub-triggered runs; falls back to `YA_CLAW_DEFAULT_PROFILE`                |
+| `YA_CLAW_BRIDGE_GITHUB_POLL_INTERVAL_SECONDS`    | Requested poll interval; effective interval also honors GitHub `X-Poll-Interval`; default `60` |
+| `YA_CLAW_BRIDGE_GITHUB_INITIAL_LOOKBACK_SECONDS` | First-start notification lookback; default `0`                                                 |
+| `YA_CLAW_BRIDGE_GITHUB_MARK_READ`                | Mark handled notification threads read on a best-effort basis; default `true`                  |
+| `YA_CLAW_BRIDGE_LARK_ENABLED`                    | Compatibility switch that also enables the Lark adapter                                        |
+| `YA_CLAW_BRIDGE_LARK_APP_ID`                     | Lark/Feishu app ID for bridge websocket ingress                                                |
+| `YA_CLAW_BRIDGE_LARK_APP_SECRET`                 | Lark/Feishu app secret for bridge websocket ingress                                            |
+| `YA_CLAW_BRIDGE_LARK_DEFAULT_PROFILE`            | Profile used for Lark-triggered runs; falls back to `YA_CLAW_DEFAULT_PROFILE`                  |
+| `YA_CLAW_BRIDGE_LARK_EVENT_TYPES`                | Accepted Lark event allowlist; include `card.action.trigger` for HITL buttons                  |
+| `YA_CLAW_BRIDGE_LARK_REPLY_IDENTITY`             | `bot` or `user`                                                                                |
+| `YA_CLAW_BRIDGE_LARK_DOMAIN`                     | Lark/Feishu OpenAPI domain                                                                     |
+| `LARK_APP_ID`                                    | Workspace `lark-cli` app ID; overrides bridge-derived workspace value                          |
+| `LARK_APP_SECRET`                                | Workspace `lark-cli` app secret; overrides bridge-derived workspace value                      |
 
-For Docker shell shapes, YA Claw passes workspace environment values to the reusable workspace container at container creation time. Built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases come from explicit process env values or the Lark bridge app settings. Additional values are forwarded by listing process env names in `YA_CLAW_WORKSPACE_ENV_VARS`. Docker shell commands use `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto` by default, which resolves to workspace UID:GID, and receive `HOME` from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME` with default `/home/claw`. Additional host directories are mounted by listing `host_path:container_path[:mode]` entries in `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS`; supported modes are `rw` and `ro`.
+For Docker shell shapes, YA Claw passes workspace environment values to the reusable workspace container at container creation time. Built-in `GH_TOKEN` comes from the GitHub bridge token; built-in `LARK_APP_ID` and `LARK_APP_SECRET` aliases come from explicit process env values or the Lark bridge app settings. Additional values are forwarded by listing process env names in `YA_CLAW_WORKSPACE_ENV_VARS`; the bridge-managed `GH_TOKEN` is merged last so a forwarded host value cannot change the GitHub identity used by bridge sessions. Docker shell commands use `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXEC_USER=auto` by default, which resolves to workspace UID:GID, and receive `HOME` from `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_HOME` with default `/home/claw`. Additional host directories are mounted by listing `host_path:container_path[:mode]` entries in `YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS`; supported modes are `rw` and `ro`.
 
 ```env
 MY_TOOL_API_KEY=replace-with-tool-key
@@ -195,7 +203,7 @@ YA_CLAW_WORKSPACE_PROVIDER_DOCKER_EXTRA_MOUNTS=/srv/ya-claw/home:/home/claw:rw,/
 
 Recreate the workspace container after changing values passed to Docker container creation.
 
-See [`bridge/overview.md`](bridge/overview.md), [`bridge/lark.md`](bridge/lark.md), and [`bridge/operations.md`](bridge/operations.md) for deployment shape and operations details.
+See [`bridge/overview.md`](bridge/overview.md), [`bridge/github.md`](bridge/github.md), [`bridge/lark.md`](bridge/lark.md), and [`bridge/operations.md`](bridge/operations.md) for deployment shape and operations details.
 
 ## Production Env Baseline
 

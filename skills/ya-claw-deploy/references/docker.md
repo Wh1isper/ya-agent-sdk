@@ -78,7 +78,7 @@ MALLOC_ARENA_MAX=2
 MALLOC_TRIM_THRESHOLD_=131072
 ```
 
-The workspace image also sets the same allocator defaults, so Python tools and CLIs in reusable workspace containers inherit the tuning.
+The workspace image also sets the same allocator defaults, so Python tools and CLIs in reusable workspace containers inherit the tuning. It includes GitHub CLI (`gh`) for GitHub bridge sessions and `lark-cli` for Lark bridge sessions.
 
 ## Environment
 
