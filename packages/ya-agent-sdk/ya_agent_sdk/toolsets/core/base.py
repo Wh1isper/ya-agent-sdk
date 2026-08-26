@@ -25,6 +25,9 @@ from typing_extensions import TypeVar
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.toolsets.base import (
+    ACTIVE_TOOL_SUPERSESSION_TAGS,
+    TOOL_SUPERSEDED_BY_TAGS_METADATA_KEY,
+    TOOL_TAGS_METADATA_KEY,
     BaseTool,
     BaseToolset,
     Instruction,
@@ -256,7 +259,12 @@ class Toolset(BaseToolset[AgentDepsT]):
                 continue
             tool_def = replace(
                 tool_def,
-                metadata={**(tool_def.metadata or {}), "codeact": tool_instance.codeact},
+                metadata={
+                    **(tool_def.metadata or {}),
+                    "codeact": tool_instance.codeact,
+                    TOOL_TAGS_METADATA_KEY: tuple(sorted(tool_instance.tags)),
+                    TOOL_SUPERSEDED_BY_TAGS_METADATA_KEY: tuple(sorted(tool_instance.superseded_by_tags)),
+                },
             )
 
             tools[name] = _BaseToolsetTool(
@@ -364,14 +372,18 @@ class Toolset(BaseToolset[AgentDepsT]):
             available_names.append(name)
             collected_tags.update(tool_instance.tags)
 
+        # A composition-level supersession wrapper publishes one run-step-local tag
+        # snapshot. Keep local tags as the fallback for standalone Toolset usage.
+        active_tags = collected_tags | ACTIVE_TOOL_SUPERSESSION_TAGS.get()
+
         # Phase 2: collect instructions, filtering superseded tools
         instructions: dict[str, InstructionPart] = {}  # group -> part
 
         for name in available_names:
             tool_instance = self._get_tool_instance(name)
 
-            # Skip tools superseded by active tags
-            if tool_instance.superseded_by_tags and (tool_instance.superseded_by_tags & collected_tags):
+            # Skip tools superseded by local or composition-level active tags.
+            if tool_instance.superseded_by_tags and (tool_instance.superseded_by_tags & active_tags):
                 continue
 
             result = await tool_instance.get_instruction(ctx)

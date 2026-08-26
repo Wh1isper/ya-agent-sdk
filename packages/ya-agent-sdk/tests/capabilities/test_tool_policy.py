@@ -14,7 +14,12 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, Retr
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.tools import ToolDefinition
 from ya_agent_sdk.agents.main import create_agent
-from ya_agent_sdk.capabilities import ToolTimeoutCapability
+from ya_agent_sdk.capabilities import (
+    FilesystemCapability,
+    ShellCapability,
+    ToolSupersessionCapability,
+    ToolTimeoutCapability,
+)
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.toolsets.core.base import BaseTool, Toolset
@@ -162,6 +167,187 @@ async def test_tool_owned_timeout_remains_raw(monkeypatch: pytest.MonkeyPatch) -
         )
 
     assert exc_info.value is original
+
+
+class _SupersededTool(BaseTool):
+    name = "superseded"
+    description = "A less capable tool"
+    superseded_by_tags = frozenset({"advanced"})
+
+    async def get_instruction(self, ctx: RunContext[AgentContext]) -> str:
+        del ctx
+        return "superseded guidance"
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        del ctx
+        return "superseded"
+
+
+class _SupersedingTool(BaseTool):
+    name = "superseding"
+    description = "A more capable tool"
+    tags = frozenset({"advanced"})
+
+    async def call(self, ctx: RunContext[AgentContext]) -> str:
+        del ctx
+        return "superseding"
+
+
+class _UnavailableSupersedingTool(_SupersedingTool):
+    name = "unavailable_superseding"
+
+    def is_available(self, ctx: RunContext[AgentContext]) -> bool:
+        del ctx
+        return False
+
+
+class _CountingToolset(Toolset[AgentContext]):
+    get_tools_calls = 0
+
+    async def get_tools(self, ctx: RunContext[AgentContext]):
+        self.get_tools_calls += 1
+        return await super().get_tools(ctx)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_cross_toolset_supersession_requires_explicit_capability(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    captured_names: set[str] = set()
+    captured_instructions = ""
+
+    def model_function(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal captured_names, captured_instructions
+        captured_names = {tool.name for tool in info.function_tools}
+        captured_instructions = info.instructions or ""
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    capabilities = [
+        ToolsetCapability(Toolset(tools=[_SupersededTool], toolset_id="basic"), id="basic"),
+        ToolsetCapability(Toolset(tools=[_SupersedingTool], toolset_id="advanced"), id="advanced"),
+    ]
+    if reverse:
+        capabilities.reverse()
+    runtime = create_agent(
+        FunctionModel(function=model_function),
+        env=LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path),
+        capabilities=capabilities,
+    )
+
+    async with runtime:
+        await runtime.agent.run("test local-only supersession", deps=runtime.ctx)
+
+    assert captured_names == {"superseded", "superseding"}
+    assert "superseded guidance" in captured_instructions
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_tool_supersession_resolves_across_capability_toolsets(
+    tmp_path: Path,
+    reverse: bool,
+) -> None:
+    captured_names: set[str] = set()
+    captured_instructions = ""
+
+    def model_function(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal captured_names, captured_instructions
+        captured_names = {tool.name for tool in info.function_tools}
+        captured_instructions = info.instructions or ""
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    tool_capabilities = [
+        ToolsetCapability(Toolset(tools=[_SupersededTool], toolset_id="basic"), id="basic"),
+        ToolsetCapability(Toolset(tools=[_SupersedingTool], toolset_id="advanced"), id="advanced"),
+    ]
+    if reverse:
+        tool_capabilities.reverse()
+    runtime = create_agent(
+        FunctionModel(function=model_function),
+        env=LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path),
+        capabilities=[*tool_capabilities, ToolSupersessionCapability()],
+    )
+
+    async with runtime:
+        await runtime.agent.run("test supersession", deps=runtime.ctx)
+
+    assert captured_names == {"superseding"}
+    assert "superseded guidance" not in captured_instructions
+    assert runtime.ctx.tool_tags == {"advanced"}
+
+
+async def test_tool_supersession_reuses_one_tool_snapshot_for_instructions(tmp_path: Path) -> None:
+    toolset = _CountingToolset(tools=[_SupersededTool, _SupersedingTool], toolset_id="counting")
+    runtime = create_agent(
+        FunctionModel(function=lambda _messages, _info: ModelResponse(parts=[TextPart(content="ok")])),
+        env=LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path),
+        capabilities=[
+            ToolsetCapability(toolset, id="counting"),
+            ToolSupersessionCapability(),
+        ],
+    )
+
+    async with runtime:
+        await runtime.agent.run("test one snapshot", deps=runtime.ctx)
+
+    assert toolset.get_tools_calls == 1
+
+
+async def test_unavailable_tool_does_not_supersede_other_capability_tools(tmp_path: Path) -> None:
+    captured_names: set[str] = set()
+
+    def model_function(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal captured_names
+        captured_names = {tool.name for tool in info.function_tools}
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_agent(
+        FunctionModel(function=model_function),
+        env=LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path),
+        capabilities=[
+            ToolsetCapability(Toolset(tools=[_SupersededTool], toolset_id="basic"), id="basic"),
+            ToolsetCapability(
+                Toolset(tools=[_UnavailableSupersedingTool], toolset_id="advanced"),
+                id="advanced",
+            ),
+            ToolSupersessionCapability(),
+        ],
+    )
+
+    async with runtime:
+        await runtime.agent.run("test unavailable superseder", deps=runtime.ctx)
+
+    assert captured_names == {"superseded"}
+    assert runtime.ctx.tool_tags == set()
+
+
+async def test_shell_supersedes_redundant_filesystem_tools_and_guidance(tmp_path: Path) -> None:
+    captured_names: set[str] = set()
+    captured_instructions = ""
+
+    def model_function(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        nonlocal captured_names, captured_instructions
+        captured_names = {tool.name for tool in info.function_tools}
+        captured_instructions = info.instructions or ""
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_agent(
+        FunctionModel(function=model_function),
+        env=LocalEnvironment(allowed_paths=[tmp_path], default_path=tmp_path, tmp_base_dir=tmp_path),
+        capabilities=[
+            FilesystemCapability(),
+            ShellCapability(),
+            ToolSupersessionCapability(),
+        ],
+    )
+
+    async with runtime:
+        await runtime.agent.run("test shell supersession", deps=runtime.ctx)
+
+    assert {"delete", "move", "copy", "mkdir"}.isdisjoint(captured_names)
+    assert {"glob", "grep", "ls", "view", "edit", "write", "shell_exec"} <= captured_names
+    assert '<tool-instruction name="delete">' not in captured_instructions
+    assert "shell" in runtime.ctx.tool_tags
 
 
 class _SlowTool(BaseTool):

@@ -13,8 +13,9 @@ A leaf capability has one behavior owner and one authority boundary.
 - Durable state is injected through a store protocol.
 - Mutable derived state is isolated by `for_run()`.
 - Presets combine leaves and add no hidden implementation.
-- Alternative tools are selected explicitly by presets or visibility policy. Global
-  tag-based arbitration is not used.
+- Alternative SDK `BaseTool` implementations may declare `tags` and
+  `superseded_by_tags`; an explicit `ToolSupersessionCapability` resolves those
+  declarations once across the final assembled toolset.
 - Native Pydantic AI capabilities replace SDK implementations when their contracts
   match.
 - Context/Environment contributions are automatic only for root assembly. For named
@@ -124,14 +125,19 @@ metadata enum is renamed from `ModelFeature` to `ModelFeature` without an alias.
 
 | Capability | Behavior |
 | --- | --- |
+| `ToolSupersessionCapability` | resolve SDK `BaseTool` tag-based alternatives across the final assembled toolset and matching guidance |
 | `ToolApprovalCapability` | project approval policy onto native tool definitions and deferred-call resolution |
 | `ToolTimeoutCapability` | bound each execution attempt around the final validated tool call |
 | `ToolVisibilityCapability` | filter prepared definitions, then recheck final host allow/deny and main-agent-only policy before execution |
 | `ToolObservationCapability` | observe one logical validated call around timeout execution |
 
 The policy applies through native capability hooks after all built-in and external tool
-contributions are assembled. Visibility and approval use preparation/execution-guard
-phases; they are not tool-execution wrappers. The only semantic execution nesting is
+contributions are assembled. Supersession reads namespaced SDK metadata projected by the
+`BaseTool` adapter; native definitions can deliberately opt in by setting the same keys,
+while definitions without them remain unchanged. It is availability-aware,
+order-independent, and reuses one run-step snapshot to filter tool-owned guidance together
+with the hidden definitions. Visibility and approval use preparation/execution-guard phases; they
+are not tool-execution wrappers. The only semantic execution nesting is
 `ToolObservationCapability` outside `ToolTimeoutCapability`. The timeout capability
 defaults to a 600-second generic ceiling, reads `YA_AGENT_TOOL_TIMEOUT_SECONDS` when
 constructed, and preserves any shorter timeout declared by a tool definition. Longer
@@ -165,8 +171,8 @@ inputs to `create_agent()`.
 
 | `BaseTool` metadata | Target |
 | --- | --- |
-| `tags` | descriptive tool metadata and visibility-policy input only |
-| `superseded_by_tags` | removed; explicit preset/visibility selection |
+| `tags` | descriptive SDK tool metadata and `ToolSupersessionCapability` input |
+| `superseded_by_tags` | SDK tool metadata resolved across assembled toolsets by explicit `ToolSupersessionCapability` |
 | `auto_inherit` | removed; explicit child capability composition |
 | `codeact` | trusted tool metadata consumed by `CodeActCapability` |
 | `main_agent_only` | final tool policy capability plus explicit child composition |

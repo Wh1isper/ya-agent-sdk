@@ -110,6 +110,15 @@ async with stream_agent(runtime, "Hello") as streamer:
 
 `create_agent()` returns an unentered `AgentRuntime`. `capabilities=` is the sole public behavior-composition surface; the Pydantic AI Agent is built only after the Environment and context have entered and all contribution groups are available. `RuntimeFoundationCapability` is explicit and is not injected by `create_agent()`.
 
+Compose `ToolSupersessionCapability()` when SDK `BaseTool` alternatives should resolve
+across feature capabilities. It collects tags from the final available tool surface,
+hides definitions whose namespaced SDK `superseded_by_tags` metadata intersects those
+tags, and suppresses their tool-owned guidance from the same run-step snapshot. SDK
+`BaseTool` adapters project this metadata automatically; native tools can explicitly opt
+in by setting the same keys, while definitions without it remain unchanged. For example,
+when both `FilesystemCapability()` and an available `ShellCapability()` are present,
+shell supersedes the redundant `mkdir`, `move`, `copy`, and `delete` tools.
+
 When stream recovery is enabled, delegated subagents and self forks inherit the root run's effective recovery policy. Each child retries transient provider or network stream failures against its own transport budget and resumes from its own recovered history. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
 
 ## Capability Plugins

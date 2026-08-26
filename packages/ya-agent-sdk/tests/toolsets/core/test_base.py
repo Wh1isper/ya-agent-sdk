@@ -256,6 +256,7 @@ async def test_toolset_get_instructions(agent_context: AgentContext) -> None:
     """Should collect instructions from tools."""
     toolset = Toolset(tools=[DummyTool])
     mock_run_ctx = MagicMock(spec=RunContext)
+    mock_run_ctx.deps = agent_context
     instructions = await toolset.get_instructions(mock_run_ctx)
     instruction_text = _instruction_text(instructions)
     assert instructions is not None

@@ -19,6 +19,7 @@ from ya_agent_sdk.capabilities import (
     RuntimeFoundationCapability,
     ToolApprovalCapability,
     ToolObservationCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     build_default_capability_catalog,
 )
@@ -59,6 +60,7 @@ def build_claw_host_capabilities(
     return (
         RuntimeFoundationCapability(),
         ClawToolsCapability(groups=groups, allowlist=allowlist),
+        ToolSupersessionCapability(),
         ToolApprovalCapability(tools=approval_tools, toolset_ids=approval_mcps),
         ToolObservationCapability(),
         ToolTimeoutCapability(),

@@ -51,6 +51,7 @@ from ya_agent_sdk.capabilities import (
     ToolApprovalCapability,
     ToolObservationCapability,
     ToolProxyCapability,
+    ToolSupersessionCapability,
     ToolTimeoutCapability,
     UserInteractionCapability,
     WebContentCapability,
@@ -424,6 +425,19 @@ def _standard_child_capability_specs(*, enable_codeact: bool) -> list[dict[str, 
     return capability_specs
 
 
+def _child_host_capabilities(config: YaacliConfig) -> tuple[AbstractCapability[Any], ...]:
+    """Build the exact child host policy used for planning and execution."""
+    return (
+        ToolSupersessionCapability(),
+        ToolApprovalCapability(
+            tools=frozenset(config.tools.need_approval),
+            toolset_ids=frozenset(config.tools.need_approval_mcps),
+        ),
+        ToolObservationCapability(),
+        ToolTimeoutCapability(),
+    )
+
+
 def compile_child_plan_manifest(
     config: YaacliConfig,
     *,
@@ -457,14 +471,7 @@ def compile_child_plan_manifest(
             SubagentExecutionMode.background,
         ),
     )
-    host_capabilities: tuple[AbstractCapability[Any], ...] = (
-        ToolApprovalCapability(
-            tools=frozenset(config.tools.need_approval),
-            toolset_ids=frozenset(config.tools.need_approval_mcps),
-        ),
-        ToolObservationCapability(),
-        ToolTimeoutCapability(),
-    )
+    host_capabilities = _child_host_capabilities(config)
     catalog = capability_catalog if capability_catalog is not None else build_default_capability_catalog()
     resolver = SubagentPlanResolver(
         catalog,
@@ -616,14 +623,7 @@ def create_tui_runtime(
             child_plan_manifest,
             default_model=active_model or None,
             default_mode=subagent_default_mode,
-            host_capabilities=(
-                ToolApprovalCapability(
-                    tools=frozenset(config.tools.need_approval),
-                    toolset_ids=frozenset(config.tools.need_approval_mcps),
-                ),
-                ToolObservationCapability(),
-                ToolTimeoutCapability(),
-            ),
+            host_capabilities=_child_host_capabilities(config),
             durable_database_path=durable_database_path,
             durable_binding_ref=durable_binding_ref,
             request_limit=config.general.max_requests,
@@ -665,6 +665,7 @@ def create_tui_runtime(
                 capabilities.append(NativeToolsetCapability(direct, id=f"mcp:{server.id}"))
 
     capabilities.extend([
+        ToolSupersessionCapability(),
         ToolApprovalCapability(
             tools=frozenset(config.tools.need_approval),
             toolset_ids=frozenset(config.tools.need_approval_mcps),
