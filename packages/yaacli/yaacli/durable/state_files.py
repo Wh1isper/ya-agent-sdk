@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
 import shutil
-import threading
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeVar
@@ -28,45 +24,7 @@ from yaacli.durable.models import ExecutionCheckpointRecord, InputRecord, InputS
 _FILE_SCHEMA_VERSION = 1
 _SESSION_MARKER_NAME = ".yaacli-session-state"
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
-_LOCKS_GUARD = threading.Lock()
-_SESSION_LOCKS: dict[Path, threading.RLock] = {}
-_LOCK_DEPTHS = threading.local()
 _PROCESS_OWNER_TOKEN = uuid.uuid4().hex
-_PROCESS_OWNER_FDS: dict[Path, int] = {}
-
-
-@contextmanager
-def exclusive_file_lock(path: Path) -> Iterator[None]:
-    """Hold a process- and filesystem-coordinated reentrant lock for one path."""
-    with _LOCKS_GUARD:
-        process_lock = _SESSION_LOCKS.setdefault(path, threading.RLock())
-    with process_lock:
-        depths = getattr(_LOCK_DEPTHS, "paths", None)
-        if depths is None:
-            depths = {}
-            _LOCK_DEPTHS.paths = depths
-        depth = depths.get(path, 0)
-        if depth:
-            depths[path] = depth + 1
-            try:
-                yield
-            finally:
-                depths[path] -= 1
-            return
-
-        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-        depths[path] = 1
-        locked = False
-        try:
-            if not _lock_descriptor(descriptor, blocking=True):  # pragma: no cover - blocking invariant
-                raise RuntimeError(f"Failed to acquire durable state lock: {path}")
-            locked = True
-            yield
-        finally:
-            depths.pop(path, None)
-            if locked:
-                _unlock_descriptor(descriptor)
-            os.close(descriptor)
 
 
 class RevisionStateFile(BaseModel):
@@ -122,56 +80,13 @@ class SessionStateFiles:
         self.root.mkdir(parents=True, exist_ok=True)
 
     def process_owner_is_alive(self, owner_token: str) -> bool:
+        """Return whether persisted work belongs to this YAACLI process."""
         if len(owner_token) != 32 or any(character not in "0123456789abcdef" for character in owner_token):
             raise ValueError(f"Invalid process owner token: {owner_token!r}")
-        lock_path = self.root / f".subagent-owner-{owner_token}.lock"
-        with _LOCKS_GUARD:
-            if owner_token == _PROCESS_OWNER_TOKEN and lock_path in _PROCESS_OWNER_FDS:
-                return True
-        if not lock_path.exists():
-            return False
-        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        try:
-            if not _lock_descriptor(descriptor, blocking=False):
-                return True
-            _unlock_descriptor(descriptor)
-        finally:
-            os.close(descriptor)
-        lock_path.unlink(missing_ok=True)
-        return False
+        return owner_token == _PROCESS_OWNER_TOKEN
 
-    def hold_process_owner_lock(self) -> str:
-        lock_path = self.root / f".subagent-owner-{_PROCESS_OWNER_TOKEN}.lock"
-        with _LOCKS_GUARD:
-            if lock_path not in _PROCESS_OWNER_FDS:
-                descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-                try:
-                    if not _lock_descriptor(descriptor, blocking=False):
-                        raise RuntimeError(f"Failed to acquire process owner lock: {lock_path}")
-                except BaseException:
-                    os.close(descriptor)
-                    raise
-                _PROCESS_OWNER_FDS[lock_path] = descriptor
+    def current_process_owner_token(self) -> str:
         return _PROCESS_OWNER_TOKEN
-
-    @contextmanager
-    def subagent_creation_lock(self) -> Iterator[None]:
-        """Serialize only the short global child-execution ID claim boundary."""
-        lock_path = self.root / ".subagent-create.lock"
-        with exclusive_file_lock(lock_path):
-            yield
-
-    @contextmanager
-    def session_lock(self, session_id: str) -> Iterator[None]:
-        """Serialize one session's SQLite lifecycle and file-state mutations."""
-        component = _safe_component(session_id, label="session ID")
-        self.session_dir(component, create=True)
-        lock_digest = hashlib.sha256(component.encode()).hexdigest()[:32]
-        lock_path = self.root / f".session-lock-{lock_digest}.lock"
-        if lock_path.is_symlink():
-            raise RuntimeError(f"Session lock path must not be a symlink: {lock_path}")
-        with exclusive_file_lock(lock_path):
-            yield
 
     def session_dir(self, session_id: str, *, create: bool = False) -> Path:
         component = _safe_component(session_id, label="session ID")
@@ -181,33 +96,28 @@ class SessionStateFiles:
             if marker.exists():
                 self._validate_session_marker(path)
                 return path
+            if path.exists():
+                raise RuntimeError(f"Refusing to claim unmarked durable session directory: {path}")
             claim_digest = hashlib.sha256(component.encode()).hexdigest()[:32]
-            claim_lock = self.root / f".session-claim-{claim_digest}.lock"
-            with exclusive_file_lock(claim_lock):
-                if marker.exists():
-                    self._validate_session_marker(path)
-                    return path
-                if path.exists():
-                    raise RuntimeError(f"Refusing to claim unmarked durable session directory: {path}")
-                temporary_prefix = f".session-{claim_digest}.tmp."
-                for stale in self.root.glob(f"{temporary_prefix}*"):
-                    if stale.is_dir() and not stale.is_symlink():
-                        shutil.rmtree(stale)
-                temporary_dir = self.root / f"{temporary_prefix}{uuid.uuid4().hex}"
-                temporary_dir.mkdir()
-                try:
-                    temporary_marker = temporary_dir / _SESSION_MARKER_NAME
-                    with temporary_marker.open("x", encoding="utf-8") as stream:
-                        stream.write(self.marker_content)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    _fsync_directory(temporary_dir)
-                    os.rename(temporary_dir, path)
-                    _fsync_directory(self.root)
-                finally:
-                    if temporary_dir.exists():
-                        shutil.rmtree(temporary_dir)
-                self._validate_session_marker(path)
+            temporary_prefix = f".session-{claim_digest}.tmp."
+            for stale in self.root.glob(f"{temporary_prefix}*"):
+                if stale.is_dir() and not stale.is_symlink():
+                    shutil.rmtree(stale)
+            temporary_dir = self.root / f"{temporary_prefix}{uuid.uuid4().hex}"
+            temporary_dir.mkdir()
+            try:
+                temporary_marker = temporary_dir / _SESSION_MARKER_NAME
+                with temporary_marker.open("x", encoding="utf-8") as stream:
+                    stream.write(self.marker_content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _fsync_directory(temporary_dir)
+                os.rename(temporary_dir, path)
+                _fsync_directory(self.root)
+            finally:
+                if temporary_dir.exists():
+                    shutil.rmtree(temporary_dir)
+            self._validate_session_marker(path)
         elif path.exists():
             self._validate_session_marker(path)
         return path
@@ -294,7 +204,7 @@ class SessionStateFiles:
         return any(not state.record.terminal for state in self.list_subagents(session_id))
 
     def fence_subagents(self, session_id: str, *, reason: str, now: datetime) -> tuple[str, ...]:
-        """Cancel nonterminal children and reject unresolved child input under the session lock."""
+        """Cancel nonterminal children and reject unresolved child input."""
         changed: list[str] = []
         for state in self.list_subagents(session_id):
             record = state.record
@@ -375,7 +285,7 @@ class SessionStateFiles:
         checkpoint_ids: set[str],
         session_exists: bool,
     ) -> int:
-        """Clean one marked session directory while its lifecycle lock is held."""
+        """Clean one marked session directory against retained SQLite metadata."""
         if session_id not in self.list_managed_session_ids():
             return 0
         if not session_exists:
@@ -494,46 +404,6 @@ class SessionStateFiles:
             current /= part
             if current.is_symlink():
                 raise RuntimeError(f"Durable state path must not contain symlinks: {current}")
-
-
-def _lock_descriptor(descriptor: int, *, blocking: bool) -> bool:
-    if os.name == "nt":
-        import msvcrt
-
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"\0")
-            os.fsync(descriptor)
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
-        try:
-            msvcrt.locking(descriptor, mode, 1)
-        except OSError as exc:
-            if not blocking and exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
-                return False
-            raise
-        return True
-
-    import fcntl
-
-    mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-    try:
-        fcntl.flock(descriptor, mode)
-    except BlockingIOError:
-        return False
-    return True
-
-
-def _unlock_descriptor(descriptor: int) -> None:
-    if os.name == "nt":
-        import msvcrt
-
-        os.lseek(descriptor, 0, os.SEEK_SET)
-        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        return
-
-    import fcntl
-
-    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _safe_component(value: str, *, label: str) -> str:

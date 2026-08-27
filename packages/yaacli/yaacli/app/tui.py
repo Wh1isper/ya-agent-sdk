@@ -633,7 +633,6 @@ class TUIApp:
     _managed_tasks: set[asyncio.Task[Any]] = field(default_factory=set, init=False, repr=False)
     _last_run: AgentRun[TUIContext, str | DeferredToolRequests] | None = field(default=None, init=False)
     _message_history: list[Any] | None = field(default=None, init=False)  # Conversation history
-    _session_save_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _last_snapshot_saved: bool | None = field(default=None, init=False)
 
     # Tool tracking
@@ -4615,15 +4614,15 @@ class TUIApp:
                 )
                 return
             if skill_invocation is None:
-                launched = self._launch_agent(text, attachments)
+                agent_prompt = text
             else:
                 agent_prompt = format_skill_invocation(skill_invocation, available_skills)
-                launched = self._launch_agent(agent_prompt, attachments, session_input=text)
+            launched = self._launch_agent(agent_prompt, attachments)
             if launched:
                 self._consume_attachment_snapshot(attachments)
                 self._add_prompt_history(text)
                 self._consume_compose_snapshot(input_area, compose_snapshot)
-                self._append_user_input(text, attachments)
+                self._append_user_input(agent_prompt, attachments)
         except Exception as error:
             logger.exception("Slash dispatch failed: %s", text)
             self._append_error_output(error)

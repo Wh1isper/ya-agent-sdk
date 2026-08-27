@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sqlite3
-import threading
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,9 +47,8 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path.expanduser().resolve()
         self.state_files = SessionStateFiles(self.database_path)
-        self.process_owner_token = self.state_files.hold_process_owner_lock()
+        self.process_owner_token = self.state_files.current_process_owner_token()
         self._active_descriptors: dict[str, SubagentPlanDescriptor] = {}
-        self._descriptor_lock = threading.RLock()
         self._validate_product_store()
 
     def _validate_product_store(self) -> None:
@@ -108,41 +106,40 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
             ):
                 continue
             owner_scope_id = snapshot.record.owner_scope_id
-            with self.state_files.session_lock(owner_scope_id):
-                state = self.state_files.read_subagent(
-                    owner_scope_id,
-                    snapshot.record.execution_id,
-                )
-                if state.record.state not in _NONTERMINAL_STATES or self.state_files.process_owner_is_alive(
-                    state.owner_token
-                ):
-                    continue
-                now = datetime.now(UTC)
-                reason = "Subagent execution was interrupted by process restart."
-                record = state.record.model_copy(
+            state = self.state_files.read_subagent(
+                owner_scope_id,
+                snapshot.record.execution_id,
+            )
+            if state.record.state not in _NONTERMINAL_STATES or self.state_files.process_owner_is_alive(
+                state.owner_token
+            ):
+                continue
+            now = datetime.now(UTC)
+            reason = "Subagent execution was interrupted by process restart."
+            record = state.record.model_copy(
+                update={
+                    "state": SubagentExecutionState.lost,
+                    "input_state": (
+                        SubagentInputState.applied
+                        if state.record.input_state is SubagentInputState.applied
+                        else SubagentInputState.rejected
+                    ),
+                    "error": reason,
+                    "completed_at": now,
+                }
+            )
+            inputs = _reject_pending_inputs(state.inputs, reason=reason, now=now)
+            self.state_files.write_subagent(
+                state.model_copy(
                     update={
-                        "state": SubagentExecutionState.lost,
-                        "input_state": (
-                            SubagentInputState.applied
-                            if state.record.input_state is SubagentInputState.applied
-                            else SubagentInputState.rejected
-                        ),
-                        "error": reason,
-                        "completed_at": now,
+                        "record": record,
+                        "inputs": inputs,
+                        "input_open": False,
+                        "updated_at": now,
                     }
                 )
-                inputs = _reject_pending_inputs(state.inputs, reason=reason, now=now)
-                self.state_files.write_subagent(
-                    state.model_copy(
-                        update={
-                            "record": record,
-                            "inputs": inputs,
-                            "input_open": False,
-                            "updated_at": now,
-                        }
-                    )
-                )
-                recovered_ids.append(record.execution_id)
+            )
+            recovered_ids.append(record.execution_id)
         return tuple(recovered_ids)
 
     async def close(self) -> None:
@@ -153,24 +150,21 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
 
     def require_executable(self, execution_id: str) -> SubagentExecutionRecord:
         """Fence model execution after owner tombstone or cancellation intent."""
-        state = self._state_for_execution(execution_id)
-        with self.state_files.session_lock(state.record.owner_scope_id):
-            return self._writable_state(execution_id).record.model_copy(deep=True)
+        self._state_for_execution(execution_id)
+        return self._writable_state(execution_id).record.model_copy(deep=True)
 
     def put_descriptor(self, plan: ResolvedSubagentPlan) -> None:
         descriptor = plan.to_descriptor()
-        with self._descriptor_lock:
-            existing = self._active_descriptors.get(descriptor.descriptor_id)
-            if existing is not None and existing != descriptor:
-                raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
-            retained = self.get_descriptor(descriptor.descriptor_id)
-            if retained is not None and retained != descriptor:
-                raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
-            self._active_descriptors[descriptor.descriptor_id] = descriptor
+        existing = self._active_descriptors.get(descriptor.descriptor_id)
+        if existing is not None and existing != descriptor:
+            raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
+        retained = self.get_descriptor(descriptor.descriptor_id)
+        if retained is not None and retained != descriptor:
+            raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
+        self._active_descriptors[descriptor.descriptor_id] = descriptor
 
     def get_descriptor(self, descriptor_id: str) -> SubagentPlanDescriptor | None:
-        with self._descriptor_lock:
-            descriptor = self._active_descriptors.get(descriptor_id)
+        descriptor = self._active_descriptors.get(descriptor_id)
         if descriptor is not None:
             return descriptor.model_copy(deep=True)
         for state in self.state_files.list_subagents():
@@ -190,66 +184,61 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
 
     async def create(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:
         owner_scope_id = record.owner_scope_id
-        with (
-            self.state_files.subagent_creation_lock(),
-            self.state_files.session_lock(owner_scope_id),
-        ):
-            self._ensure_owner_active(owner_scope_id)
-            for state in self.state_files.list_subagents(owner_scope_id):
-                if state.record.idempotency_key == record.idempotency_key:
-                    return state.record.model_copy(deep=True)
-            existing_id = self.state_files.find_subagent(record.execution_id)
-            if existing_id is not None:
-                raise SubagentExecutionIdConflict(f"Subagent execution {record.execution_id!r} already exists")
-            descriptor = self.get_descriptor(record.descriptor_id)
-            if descriptor is None:
-                raise RuntimeError(f"Subagent execution references missing descriptor {record.descriptor_id!r}")
-            if descriptor.fingerprint != record.plan_fingerprint:
-                raise ValueError("Subagent execution plan fingerprint does not match its descriptor")
-            now = datetime.now(UTC)
-            self.state_files.write_subagent(
-                SubagentStateFile(
-                    descriptor=descriptor,
-                    record=record,
-                    owner_pid=os.getpid(),
-                    owner_token=self.process_owner_token,
-                    input_open=record.state in _NONTERMINAL_STATES,
-                    created_at=record.created_at,
-                    updated_at=now,
-                )
+        self._ensure_owner_active(owner_scope_id)
+        for state in self.state_files.list_subagents(owner_scope_id):
+            if state.record.idempotency_key == record.idempotency_key:
+                return state.record.model_copy(deep=True)
+        existing_id = self.state_files.find_subagent(record.execution_id)
+        if existing_id is not None:
+            raise SubagentExecutionIdConflict(f"Subagent execution {record.execution_id!r} already exists")
+        descriptor = self.get_descriptor(record.descriptor_id)
+        if descriptor is None:
+            raise RuntimeError(f"Subagent execution references missing descriptor {record.descriptor_id!r}")
+        if descriptor.fingerprint != record.plan_fingerprint:
+            raise ValueError("Subagent execution plan fingerprint does not match its descriptor")
+        now = datetime.now(UTC)
+        self.state_files.write_subagent(
+            SubagentStateFile(
+                descriptor=descriptor,
+                record=record,
+                owner_pid=os.getpid(),
+                owner_token=self.process_owner_token,
+                input_open=record.state in _NONTERMINAL_STATES,
+                created_at=record.created_at,
+                updated_at=now,
             )
+        )
         return record.model_copy(deep=True)
 
     async def save(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:
         owner_scope_id = record.owner_scope_id
-        with self.state_files.session_lock(owner_scope_id):
-            state = self.state_files.read_subagent(owner_scope_id, record.execution_id)
-            current = state.record
-            fenced = self._owner_status(owner_scope_id) is not SessionStatus.active or state.cancel_requested
-            if current.terminal and (record.state is not current.state or fenced):
-                return current.model_copy(deep=True)
-            if fenced and record.state is not SubagentExecutionState.cancelled:
-                raise TombstonedSessionError(f"Owner session {owner_scope_id!r} fenced a late child commit")
-            now = datetime.now(UTC)
-            input_open = not fenced and record.state in _NONTERMINAL_STATES
-            inputs = state.inputs
-            if record.terminal:
-                reason = (
-                    state.cancellation_reason
-                    if fenced and state.cancellation_reason is not None
-                    else f"child terminated as {record.state.value} before input application"
-                )
-                inputs = _reject_pending_inputs(inputs, reason=reason, now=now)
-            self.state_files.write_subagent(
-                state.model_copy(
-                    update={
-                        "record": record,
-                        "inputs": inputs,
-                        "input_open": input_open,
-                        "updated_at": now,
-                    }
-                )
+        state = self.state_files.read_subagent(owner_scope_id, record.execution_id)
+        current = state.record
+        fenced = self._owner_status(owner_scope_id) is not SessionStatus.active or state.cancel_requested
+        if current.terminal and (record.state is not current.state or fenced):
+            return current.model_copy(deep=True)
+        if fenced and record.state is not SubagentExecutionState.cancelled:
+            raise TombstonedSessionError(f"Owner session {owner_scope_id!r} fenced a late child commit")
+        now = datetime.now(UTC)
+        input_open = not fenced and record.state in _NONTERMINAL_STATES
+        inputs = state.inputs
+        if record.terminal:
+            reason = (
+                state.cancellation_reason
+                if fenced and state.cancellation_reason is not None
+                else f"child terminated as {record.state.value} before input application"
             )
+            inputs = _reject_pending_inputs(inputs, reason=reason, now=now)
+        self.state_files.write_subagent(
+            state.model_copy(
+                update={
+                    "record": record,
+                    "inputs": inputs,
+                    "input_open": input_open,
+                    "updated_at": now,
+                }
+            )
+        )
         return record.model_copy(deep=True)
 
     async def get(
@@ -309,40 +298,38 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
         origin: InputOrigin,
     ) -> InputRecord:
         normalized = cast(list[Any], to_jsonable_python(list(content)))
-        snapshot = self._state_for_execution(execution_id)
-        owner_scope_id = snapshot.record.owner_scope_id
-        with self.state_files.session_lock(owner_scope_id):
-            state = self._writable_state(execution_id)
-            for item in state.inputs:
-                if item.idempotency_key != idempotency_key:
-                    continue
-                if item.content != normalized or item.origin != origin.value:
-                    raise ValueError("Child input idempotency key was reused with different content")
-                return item.model_copy(deep=True)
-            if not state.input_open or state.record.state not in _NONTERMINAL_STATES:
-                raise InvalidTransitionError(f"Subagent execution {execution_id!r} is not accepting input")
-            now = datetime.now(UTC)
-            record = InputRecord(
-                input_id=str(uuid4()),
-                logical_run_id=execution_id,
-                order_index=max((item.order_index for item in state.inputs), default=-1) + 1,
-                idempotency_key=idempotency_key,
-                origin=origin.value,
-                priority=InputPriority.asap,
-                content=normalized,
-                state=InputState.accepted,
-                created_at=now,
-                updated_at=now,
+        self._state_for_execution(execution_id)
+        state = self._writable_state(execution_id)
+        for item in state.inputs:
+            if item.idempotency_key != idempotency_key:
+                continue
+            if item.content != normalized or item.origin != origin.value:
+                raise ValueError("Child input idempotency key was reused with different content")
+            return item.model_copy(deep=True)
+        if not state.input_open or state.record.state not in _NONTERMINAL_STATES:
+            raise InvalidTransitionError(f"Subagent execution {execution_id!r} is not accepting input")
+        now = datetime.now(UTC)
+        record = InputRecord(
+            input_id=str(uuid4()),
+            logical_run_id=execution_id,
+            order_index=max((item.order_index for item in state.inputs), default=-1) + 1,
+            idempotency_key=idempotency_key,
+            origin=origin.value,
+            priority=InputPriority.asap,
+            content=normalized,
+            state=InputState.accepted,
+            created_at=now,
+            updated_at=now,
+        )
+        self.state_files.write_subagent(
+            state.model_copy(
+                update={
+                    "inputs": (*state.inputs, record),
+                    "updated_at": now,
+                }
             )
-            self.state_files.write_subagent(
-                state.model_copy(
-                    update={
-                        "inputs": (*state.inputs, record),
-                        "updated_at": now,
-                    }
-                )
-            )
-            return record.model_copy(deep=True)
+        )
+        return record.model_copy(deep=True)
 
     def list_inputs(
         self,
@@ -374,67 +361,63 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
         rejection_reason: str | None = None,
     ) -> InputRecord:
         snapshot, index = self._find_input(input_id)
-        owner_scope_id = snapshot.record.owner_scope_id
-        with self.state_files.session_lock(owner_scope_id):
-            state = self._writable_state(snapshot.record.execution_id)
-            try:
-                index = next(position for position, item in enumerate(state.inputs) if item.input_id == input_id)
-            except StopIteration as exc:
-                raise KeyError(input_id) from exc
-            record = state.inputs[index]
-            now = datetime.now(UTC)
-            if record.state is target:
-                if (
-                    target is InputState.enqueued
-                    and native_enqueue_id is not None
-                    and record.native_enqueue_id != native_enqueue_id
-                ):
-                    record = record.model_copy(
-                        update={
-                            "native_enqueue_id": native_enqueue_id,
-                            "updated_at": now,
-                        }
-                    )
-                else:
-                    return record.model_copy(deep=True)
-            else:
-                if record.state is not expected or target not in _INPUT_TRANSITIONS[record.state]:
-                    raise InvalidTransitionError(
-                        f"Cannot transition child input from {record.state.value} to {target.value}"
-                    )
-                if target is InputState.rejected and not rejection_reason:
-                    raise InvalidTransitionError("Rejected child inputs require a reason")
+        state = self._writable_state(snapshot.record.execution_id)
+        try:
+            index = next(position for position, item in enumerate(state.inputs) if item.input_id == input_id)
+        except StopIteration as exc:
+            raise KeyError(input_id) from exc
+        record = state.inputs[index]
+        now = datetime.now(UTC)
+        if record.state is target:
+            if (
+                target is InputState.enqueued
+                and native_enqueue_id is not None
+                and record.native_enqueue_id != native_enqueue_id
+            ):
                 record = record.model_copy(
                     update={
-                        "state": target,
-                        "native_enqueue_id": native_enqueue_id or record.native_enqueue_id,
-                        "rejection_reason": rejection_reason or record.rejection_reason,
+                        "native_enqueue_id": native_enqueue_id,
                         "updated_at": now,
                     }
                 )
-            inputs = list(state.inputs)
-            inputs[index] = record
-            self.state_files.write_subagent(state.model_copy(update={"inputs": tuple(inputs), "updated_at": now}))
-            return record.model_copy(deep=True)
+            else:
+                return record.model_copy(deep=True)
+        else:
+            if record.state is not expected or target not in _INPUT_TRANSITIONS[record.state]:
+                raise InvalidTransitionError(
+                    f"Cannot transition child input from {record.state.value} to {target.value}"
+                )
+            if target is InputState.rejected and not rejection_reason:
+                raise InvalidTransitionError("Rejected child inputs require a reason")
+            record = record.model_copy(
+                update={
+                    "state": target,
+                    "native_enqueue_id": native_enqueue_id or record.native_enqueue_id,
+                    "rejection_reason": rejection_reason or record.rejection_reason,
+                    "updated_at": now,
+                }
+            )
+        inputs = list(state.inputs)
+        inputs[index] = record
+        self.state_files.write_subagent(state.model_copy(update={"inputs": tuple(inputs), "updated_at": now}))
+        return record.model_copy(deep=True)
 
     def close_and_list_inputs(self, execution_id: str) -> tuple[InputRecord, ...]:
-        snapshot = self._state_for_execution(execution_id)
-        owner_scope_id = snapshot.record.owner_scope_id
-        with self.state_files.session_lock(owner_scope_id):
-            state = self._writable_state(execution_id)
-            if state.record.terminal or state.record.state is SubagentExecutionState.suspended:
-                return ()
-            pending = tuple(item for item in state.inputs if item.state in {InputState.accepted, InputState.enqueued})
-            now = datetime.now(UTC)
-            self.state_files.write_subagent(
-                state.model_copy(
-                    update={
-                        "input_open": bool(pending),
-                        "updated_at": now,
-                    }
-                )
+        self._state_for_execution(execution_id)
+        state = self._writable_state(execution_id)
+        if state.record.terminal or state.record.state is SubagentExecutionState.suspended:
+            return ()
+        pending = tuple(item for item in state.inputs if item.state in {InputState.accepted, InputState.enqueued})
+        now = datetime.now(UTC)
+        self.state_files.write_subagent(
+            state.model_copy(
+                update={
+                    "input_open": bool(pending),
+                    "updated_at": now,
+                }
             )
-            return tuple(item.model_copy(deep=True) for item in pending)
+        )
+        return tuple(item.model_copy(deep=True) for item in pending)
 
     def _find_input(self, input_id: str) -> tuple[SubagentStateFile, int]:
         for state in self.state_files.list_subagents():

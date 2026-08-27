@@ -746,6 +746,8 @@ def cli(
     Session commands:
       yaacli sessions list
       yaacli sessions show <session-id>
+      yaacli sessions delete <session-id>
+      yaacli sessions maintain
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -932,6 +934,20 @@ def _session_summary_payload(entry: object) -> dict[str, object]:
     return entry.model_dump(mode="json")
 
 
+def _maintenance_result_payload(result: object) -> dict[str, object]:
+    from yaacli.durable.sqlite import StoreMaintenanceResult
+
+    if not isinstance(result, StoreMaintenanceResult):
+        raise TypeError(f"Expected StoreMaintenanceResult, got {type(result)!r}")
+    return {
+        "pruned_turns": result.pruned_turns,
+        "purged_sessions": result.purged_sessions,
+        "tombstoned_sessions": result.tombstoned_sessions,
+        "removed_orphan_files": result.removed_orphan_files,
+        "vacuumed": result.vacuumed,
+    }
+
+
 def _session_query_service(
     config_manager: ConfigManager,
 ) -> tuple[SQLiteSessionStore, SessionApplicationService]:
@@ -1018,6 +1034,28 @@ def sessions_delete(session_id: str, yes: bool, verbose: bool) -> None:
             return
         deleted = service.delete_session(entry.session_id)
     click.echo(f"Deleted session: {deleted.session_id}")
+
+
+@sessions.command("maintain")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON results.")
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging")
+def sessions_maintain(as_json: bool, verbose: bool) -> None:
+    """Run maintenance while no other YAACLI process uses the store."""
+    config_manager = _prepare_session_cli_runtime(verbose)
+    store, _service = _session_query_service(config_manager)
+    with store:
+        result = store.run_maintenance()
+    payload = _maintenance_result_payload(result)
+    if as_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo("Session maintenance complete.")
+    click.echo(f"Pruned turns: {result.pruned_turns}")
+    click.echo(f"Purged sessions: {result.purged_sessions}")
+    click.echo(f"Tombstoned sessions: {result.tombstoned_sessions}")
+    click.echo(f"Removed orphan files: {result.removed_orphan_files}")
+    click.echo(f"Vacuumed: {'yes' if result.vacuumed else 'no'}")
 
 
 def main() -> None:

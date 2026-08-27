@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
-import threading
 import uuid
 from collections.abc import Iterator, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,12 +40,7 @@ from yaacli.durable.sqlite_schema import (
     user_schema_object_names,
     validate_exact_schema_subset,
 )
-from yaacli.durable.state_files import (
-    CheckpointStateFile,
-    RevisionStateFile,
-    SessionStateFiles,
-    exclusive_file_lock,
-)
+from yaacli.durable.state_files import CheckpointStateFile, RevisionStateFile, SessionStateFiles
 from yaacli.durable.store import (
     InvalidTransitionError,
     TombstonedSessionError,
@@ -56,8 +49,6 @@ from yaacli.durable.store import (
 logger = logging.getLogger(__name__)
 
 _SCHEMA_VERSION = SESSION_SCHEMA_VERSION
-_LEGACY_RESET_SCHEMA_VERSIONS = frozenset({"5"})
-_LEGACY_SCHEMA_V5_FINGERPRINT = "cdc841c9a9b51a4ddf01ab91f66e0f5df01562c53b30a87252edb67afb4ad951"
 _DEFAULT_MAX_TURNS_PER_SESSION = 20
 _DEFAULT_MAX_SESSIONS = 100
 _VACUUM_MIN_INTERVAL = timedelta(days=7)
@@ -275,31 +266,18 @@ class SQLiteSessionStore:
         self.max_turns_per_session = max_turns_per_session
         self.max_sessions = max_sessions
         self.max_session_age_days = max_session_age_days
-        self._lock = threading.RLock()
-        cutover_lock_path = path.with_name(f".{path.name}.cutover.lock")
-        with exclusive_file_lock(cutover_lock_path):
-            _reset_disposable_legacy_database(path)
-            self._connection = sqlite3.connect(
-                path,
-                isolation_level=None,
-                check_same_thread=False,
-                timeout=30.0,
-            )
-            self._connection.row_factory = sqlite3.Row
-            try:
-                with self._lock:
-                    self._initialize_or_validate_schema()
-                    self._connection.execute("PRAGMA foreign_keys = ON")
-                    self._connection.execute("PRAGMA journal_mode = WAL")
-                    self._connection.execute("PRAGMA synchronous = FULL")
-                    self._connection.execute("PRAGMA busy_timeout = 30000")
-            except BaseException:
-                self._connection.close()
-                raise
+        self._connection = sqlite3.connect(
+            path,
+            isolation_level=None,
+            timeout=30.0,
+        )
+        self._connection.row_factory = sqlite3.Row
         try:
-            maintenance = self.run_maintenance()
-            if maintenance != StoreMaintenanceResult():
-                logger.info("SQLite maintenance completed: %s", maintenance)
+            self._initialize_or_validate_schema()
+            self._connection.execute("PRAGMA foreign_keys = ON")
+            self._connection.execute("PRAGMA journal_mode = WAL")
+            self._connection.execute("PRAGMA synchronous = FULL")
+            self._connection.execute("PRAGMA busy_timeout = 30000")
         except BaseException:
             self._connection.close()
             raise
@@ -335,8 +313,7 @@ class SQLiteSessionStore:
             )
 
     def close(self) -> None:
-        with self._lock:
-            self._connection.close()
+        self._connection.close()
 
     def __enter__(self) -> SQLiteSessionStore:
         return self
@@ -346,15 +323,14 @@ class SQLiteSessionStore:
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:
-        with self._lock:
-            self._connection.execute("BEGIN IMMEDIATE")
-            try:
-                yield self._connection
-            except BaseException:
-                self._connection.rollback()
-                raise
-            else:
-                self._connection.commit()
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield self._connection
+        except BaseException:
+            self._connection.rollback()
+            raise
+        else:
+            self._connection.commit()
 
     def run_maintenance(
         self,
@@ -369,9 +345,8 @@ class SQLiteSessionStore:
             pruned_turns = self._prune_all_session_turns(connection)
         tombstoned_sessions = self._tombstone_expired_sessions(maintenance_time)
         removed_orphan_files = self._cleanup_orphan_state_files()
-        with self._lock:
-            self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            vacuumed = self._maybe_vacuum(maintenance_time, force=force_vacuum)
+        self._connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        vacuumed = self._maybe_vacuum(maintenance_time, force=force_vacuum)
         return StoreMaintenanceResult(
             pruned_turns=pruned_turns,
             purged_sessions=purged_sessions,
@@ -386,35 +361,33 @@ class SQLiteSessionStore:
             if not self.state_files.session_dir(session_id).exists():
                 continue
             try:
-                with self.state_files.session_lock(session_id):
-                    with self._lock:
-                        session_exists = (
-                            self._connection.execute(
-                                "SELECT 1 FROM sessions WHERE session_id = ?",
-                                (session_id,),
-                            ).fetchone()
-                            is not None
-                        )
-                        revision_ids = {
-                            str(row["revision_id"])
-                            for row in self._connection.execute(
-                                "SELECT revision_id FROM revisions WHERE session_id = ?",
-                                (session_id,),
-                            )
-                        }
-                        checkpoint_ids = {
-                            str(row["execution_id"])
-                            for row in self._connection.execute(
-                                "SELECT execution_id FROM execution_checkpoints WHERE session_id = ?",
-                                (session_id,),
-                            )
-                        }
-                    removed += self.state_files.remove_session_orphans(
-                        session_id,
-                        revision_ids=revision_ids,
-                        checkpoint_ids=checkpoint_ids,
-                        session_exists=session_exists,
+                session_exists = (
+                    self._connection.execute(
+                        "SELECT 1 FROM sessions WHERE session_id = ?",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                )
+                revision_ids = {
+                    str(row["revision_id"])
+                    for row in self._connection.execute(
+                        "SELECT revision_id FROM revisions WHERE session_id = ?",
+                        (session_id,),
                     )
+                }
+                checkpoint_ids = {
+                    str(row["execution_id"])
+                    for row in self._connection.execute(
+                        "SELECT execution_id FROM execution_checkpoints WHERE session_id = ?",
+                        (session_id,),
+                    )
+                }
+                removed += self.state_files.remove_session_orphans(
+                    session_id,
+                    revision_ids=revision_ids,
+                    checkpoint_ids=checkpoint_ids,
+                    session_exists=session_exists,
+                )
             except OSError as exc:
                 logger.warning(
                     "Deferred durable state-file cleanup for session %s: %s",
@@ -469,16 +442,15 @@ class SQLiteSessionStore:
             connection.execute("DELETE FROM logical_runs WHERE logical_run_id = ?", (logical_run_id,))
 
     def _purge_tombstoned_sessions(self) -> int:
-        with self._lock:
-            rows = self._connection.execute(
-                "SELECT session_id FROM sessions WHERE status = ? ORDER BY tombstoned_at, session_id",
-                (SessionStatus.tombstoned.value,),
-            ).fetchall()
+        rows = self._connection.execute(
+            "SELECT session_id FROM sessions WHERE status = ? ORDER BY tombstoned_at, session_id",
+            (SessionStatus.tombstoned.value,),
+        ).fetchall()
         purged = 0
         now = utc_now()
         for row in rows:
             session_id = str(row["session_id"])
-            with self.state_files.session_lock(session_id), self._write() as connection:
+            with self._write() as connection:
                 current = connection.execute(
                     "SELECT status FROM sessions WHERE session_id = ?",
                     (session_id,),
@@ -512,15 +484,14 @@ class SQLiteSessionStore:
         return purged
 
     def _tombstone_expired_sessions(self, now: datetime) -> int:
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM sessions
-                WHERE status = ?
-                ORDER BY updated_at DESC, session_id
-                """,
-                (SessionStatus.active.value,),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT * FROM sessions
+            WHERE status = ?
+            ORDER BY updated_at DESC, session_id
+            """,
+            (SessionStatus.active.value,),
+        ).fetchall()
         excess_ids = {row["session_id"] for row in rows[self.max_sessions :]}
         cutoff = now - timedelta(days=self.max_session_age_days) if self.max_session_age_days is not None else None
         if cutoff is not None:
@@ -531,7 +502,7 @@ class SQLiteSessionStore:
             session_id = str(row["session_id"])
             if session_id not in excess_ids:
                 continue
-            with self.state_files.session_lock(session_id), self._write() as connection:
+            with self._write() as connection:
                 current = self._required_session(connection, session_id)
                 if current.status is not SessionStatus.active or not self._session_is_quiescent(connection, session_id):
                     continue
@@ -640,40 +611,37 @@ class SQLiteSessionStore:
             return self._session_from_row(self._required_row(connection, "sessions", "session_id", resolved_id))
 
     def get_session(self, session_id: str) -> SessionRecord | None:
-        with self._lock:
-            row = self._connection.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        row = self._connection.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         return self._session_from_row(row) if row is not None else None
 
     def list_sessions(self, *, limit: int = 100) -> tuple[SessionRecord, ...]:
         if limit < 0:
             raise ValueError("limit must be non-negative")
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM sessions
-                WHERE status = ?
-                ORDER BY updated_at DESC, session_id
-                LIMIT ?
-                """,
-                (SessionStatus.active.value, limit),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT * FROM sessions
+            WHERE status = ?
+            ORDER BY updated_at DESC, session_id
+            LIMIT ?
+            """,
+            (SessionStatus.active.value, limit),
+        ).fetchall()
         return tuple(self._session_from_row(row) for row in rows)
 
     def get_session_summary(self, session_id: str) -> SessionSummary | None:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT s.*, r.input_preview, r.output_preview,
-                       COALESCE(r.message_count, 0) AS message_count,
-                       COALESCE(r.display_event_count, 0) AS display_event_count,
-                       lr.model, lr.model_profile_id
-                FROM sessions AS s
-                LEFT JOIN revisions AS r ON r.revision_id = s.head_revision_id
-                LEFT JOIN logical_runs AS lr ON lr.logical_run_id = r.logical_run_id
-                WHERE s.session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            """
+            SELECT s.*, r.input_preview, r.output_preview,
+                   COALESCE(r.message_count, 0) AS message_count,
+                   COALESCE(r.display_event_count, 0) AS display_event_count,
+                   lr.model, lr.model_profile_id
+            FROM sessions AS s
+            LEFT JOIN revisions AS r ON r.revision_id = s.head_revision_id
+            LEFT JOIN logical_runs AS lr ON lr.logical_run_id = r.logical_run_id
+            WHERE s.session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
         if row is None:
             return None
         return SessionSummary(
@@ -693,39 +661,38 @@ class SQLiteSessionStore:
 
     def tombstone_session(self, session_id: str) -> SessionRecord:
         now = utc_now()
-        with self.state_files.session_lock(session_id):
-            with self._write() as connection:
-                row = self._required_row(connection, "sessions", "session_id", session_id)
-                session = self._session_from_row(row)
-                if session.status is SessionStatus.active:
-                    if self._session_has_nonterminal_main_run(connection, session_id):
-                        raise InvalidTransitionError(
-                            f"Cannot tombstone session {session_id!r} while a main run is nonterminal"
-                        )
-                    connection.execute(
-                        """
-                        UPDATE sessions
-                        SET status = ?, tombstoned_at = ?, updated_at = ?
-                        WHERE session_id = ?
-                        """,
-                        (
-                            SessionStatus.tombstoned.value,
-                            _dt(now),
-                            _dt(now),
-                            session_id,
-                        ),
+        with self._write() as connection:
+            row = self._required_row(connection, "sessions", "session_id", session_id)
+            session = self._session_from_row(row)
+            if session.status is SessionStatus.active:
+                if self._session_has_nonterminal_main_run(connection, session_id):
+                    raise InvalidTransitionError(
+                        f"Cannot tombstone session {session_id!r} while a main run is nonterminal"
                     )
-                    tombstoned = self._session_from_row(
-                        self._required_row(connection, "sessions", "session_id", session_id)
-                    )
-                else:
-                    tombstoned = session
-            self.state_files.fence_subagents(
-                session_id,
-                reason="owner session tombstoned",
-                now=now,
-            )
-            return tombstoned
+                connection.execute(
+                    """
+                    UPDATE sessions
+                    SET status = ?, tombstoned_at = ?, updated_at = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        SessionStatus.tombstoned.value,
+                        _dt(now),
+                        _dt(now),
+                        session_id,
+                    ),
+                )
+                tombstoned = self._session_from_row(
+                    self._required_row(connection, "sessions", "session_id", session_id)
+                )
+            else:
+                tombstoned = session
+        self.state_files.fence_subagents(
+            session_id,
+            reason="owner session tombstoned",
+            now=now,
+        )
+        return tombstoned
 
     def start_run(self, request: StartRunRequest) -> LogicalRunRecord:
         now = utc_now()
@@ -821,108 +788,101 @@ class SQLiteSessionStore:
             return self._run_from_row(self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id))
 
     def get_run(self, logical_run_id: str) -> LogicalRunRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM logical_runs WHERE logical_run_id = ?",
-                (logical_run_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            "SELECT * FROM logical_runs WHERE logical_run_id = ?",
+            (logical_run_id,),
+        ).fetchone()
         return self._run_from_row(row) if row is not None else None
 
     def get_execution(self, execution_id: str) -> ExecutionRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM executions WHERE execution_id = ?", (execution_id,)
-            ).fetchone()
+        row = self._connection.execute("SELECT * FROM executions WHERE execution_id = ?", (execution_id,)).fetchone()
         return self._execution_from_row(row) if row is not None else None
 
     def put_execution_checkpoint(
         self,
         checkpoint: ExecutionCheckpointRecord,
     ) -> ExecutionCheckpointRecord:
-        with self._lock:
-            row = self._connection.execute(
-                """
-                SELECT e.logical_run_id, lr.session_id
-                FROM executions AS e
-                JOIN logical_runs AS lr ON lr.logical_run_id = e.logical_run_id
-                WHERE e.execution_id = ?
-                """,
-                (checkpoint.execution_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            """
+            SELECT e.logical_run_id, lr.session_id
+            FROM executions AS e
+            JOIN logical_runs AS lr ON lr.logical_run_id = e.logical_run_id
+            WHERE e.execution_id = ?
+            """,
+            (checkpoint.execution_id,),
+        ).fetchone()
         if row is None:
             raise KeyError(checkpoint.execution_id)
         if row["logical_run_id"] != checkpoint.logical_run_id:
             raise ValueError("Execution checkpoint does not match its logical run")
         session_id = str(row["session_id"])
-        with self.state_files.session_lock(session_id):
-            session = self.get_session(session_id)
-            if session is None:
-                raise KeyError(session_id)
-            self._ensure_active_session(session)
-            existing = self.get_execution_checkpoint(checkpoint.execution_id)
-            if existing is not None:
-                if existing.segment_index > checkpoint.segment_index:
-                    raise InvalidTransitionError("Execution checkpoint segment index cannot move backwards")
-                if existing.segment_index == checkpoint.segment_index:
-                    comparable_existing = existing.model_copy(
-                        update={"created_at": checkpoint.created_at, "updated_at": checkpoint.updated_at}
-                    )
-                    if comparable_existing != checkpoint:
-                        raise ValueError("Execution checkpoint segment was reused with different content")
-                    return existing
-            stored_checkpoint = (
-                checkpoint if existing is None else checkpoint.model_copy(update={"created_at": existing.created_at})
-            )
-            self.state_files.write_checkpoint(
-                session_id,
-                CheckpointStateFile(
-                    checkpoint=stored_checkpoint,
-                    previous_checkpoint=existing,
+        session = self.get_session(session_id)
+        if session is None:
+            raise KeyError(session_id)
+        self._ensure_active_session(session)
+        existing = self.get_execution_checkpoint(checkpoint.execution_id)
+        if existing is not None:
+            if existing.segment_index > checkpoint.segment_index:
+                raise InvalidTransitionError("Execution checkpoint segment index cannot move backwards")
+            if existing.segment_index == checkpoint.segment_index:
+                comparable_existing = existing.model_copy(
+                    update={"created_at": checkpoint.created_at, "updated_at": checkpoint.updated_at}
+                )
+                if comparable_existing != checkpoint:
+                    raise ValueError("Execution checkpoint segment was reused with different content")
+                return existing
+        stored_checkpoint = (
+            checkpoint if existing is None else checkpoint.model_copy(update={"created_at": existing.created_at})
+        )
+        self.state_files.write_checkpoint(
+            session_id,
+            CheckpointStateFile(
+                checkpoint=stored_checkpoint,
+                previous_checkpoint=existing,
+            ),
+        )
+        with self._write() as connection:
+            self._ensure_active_session(self._required_session(connection, session_id))
+            created_at = _dt(existing.created_at) if existing is not None else _dt(checkpoint.created_at)
+            connection.execute(
+                """
+                INSERT INTO execution_checkpoints(
+                    execution_id, logical_run_id, session_id, segment_index,
+                    segment_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(execution_id) DO UPDATE SET
+                    segment_index = excluded.segment_index,
+                    segment_status = excluded.segment_status,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    checkpoint.execution_id,
+                    checkpoint.logical_run_id,
+                    session_id,
+                    stored_checkpoint.segment_index,
+                    stored_checkpoint.segment_status,
+                    created_at,
+                    _dt(stored_checkpoint.updated_at),
                 ),
             )
-            with self._write() as connection:
-                self._ensure_active_session(self._required_session(connection, session_id))
-                created_at = _dt(existing.created_at) if existing is not None else _dt(checkpoint.created_at)
-                connection.execute(
-                    """
-                    INSERT INTO execution_checkpoints(
-                        execution_id, logical_run_id, session_id, segment_index,
-                        segment_status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(execution_id) DO UPDATE SET
-                        segment_index = excluded.segment_index,
-                        segment_status = excluded.segment_status,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        checkpoint.execution_id,
-                        checkpoint.logical_run_id,
-                        session_id,
-                        stored_checkpoint.segment_index,
-                        stored_checkpoint.segment_status,
-                        created_at,
-                        _dt(stored_checkpoint.updated_at),
-                    ),
-                )
-            try:
-                self.state_files.write_checkpoint(
-                    session_id,
-                    CheckpointStateFile(checkpoint=stored_checkpoint),
-                )
-            except OSError as exc:
-                logger.warning(
-                    "Deferred committed checkpoint compaction for execution %s: %s",
-                    stored_checkpoint.execution_id,
-                    exc,
-                )
-            return stored_checkpoint.model_copy(deep=True)
+        try:
+            self.state_files.write_checkpoint(
+                session_id,
+                CheckpointStateFile(checkpoint=stored_checkpoint),
+            )
+        except OSError as exc:
+            logger.warning(
+                "Deferred committed checkpoint compaction for execution %s: %s",
+                stored_checkpoint.execution_id,
+                exc,
+            )
+        return stored_checkpoint.model_copy(deep=True)
 
     def get_execution_checkpoint(self, execution_id: str) -> ExecutionCheckpointRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM execution_checkpoints WHERE execution_id = ?",
-                (execution_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            "SELECT * FROM execution_checkpoints WHERE execution_id = ?",
+            (execution_id,),
+        ).fetchone()
         if row is None:
             return None
         state = self.state_files.read_checkpoint(str(row["session_id"]), execution_id)
@@ -1071,8 +1031,7 @@ class SQLiteSessionStore:
             query += f" AND state IN ({','.join('?' for _ in states)})"
             params.extend(state.value for state in states)
         query += " ORDER BY CASE priority WHEN 'asap' THEN 0 ELSE 1 END, order_index"
-        with self._lock:
-            rows = self._connection.execute(query, params).fetchall()
+        rows = self._connection.execute(query, params).fetchall()
         return tuple(self._input_from_row(row) for row in rows)
 
     def transition_input(
@@ -1163,82 +1122,80 @@ class SQLiteSessionStore:
         logical_run_id = str(uuid.uuid4())
         execution_id = str(uuid.uuid4())
         revision_id = str(uuid.uuid4())
-        with self.state_files.session_lock(session_id):
-            with self._lock:
-                row = self._connection.execute(
-                    "SELECT * FROM sessions WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-            if row is None:
-                raise KeyError(session_id)
-            session = self._session_from_row(row)
-            self._ensure_active_session(session)
-            terminal = dict(payload.terminal)
-            terminal.setdefault("status", LogicalRunStatus.completed.value)
-            terminal["import_source"] = source
-            revision = RevisionRecord(
-                revision_id=revision_id,
-                session_id=session_id,
-                logical_run_id=logical_run_id,
-                commit_kind="offline_import",
-                parent_revision_id=session.head_revision_id,
-                message_history=payload.message_history,
-                resumable_state=payload.resumable_state,
-                input_ledger=payload.input_ledger,
-                display_projection=payload.display_projection,
-                usage=payload.usage,
-                terminal=terminal,
-                created_at=now,
+        row = self._connection.execute(
+            "SELECT * FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        session = self._session_from_row(row)
+        self._ensure_active_session(session)
+        terminal = dict(payload.terminal)
+        terminal.setdefault("status", LogicalRunStatus.completed.value)
+        terminal["import_source"] = source
+        revision = RevisionRecord(
+            revision_id=revision_id,
+            session_id=session_id,
+            logical_run_id=logical_run_id,
+            commit_kind="offline_import",
+            parent_revision_id=session.head_revision_id,
+            message_history=payload.message_history,
+            resumable_state=payload.resumable_state,
+            input_ledger=payload.input_ledger,
+            display_projection=payload.display_projection,
+            usage=payload.usage,
+            terminal=terminal,
+            created_at=now,
+        )
+        self.state_files.write_revision(RevisionStateFile(revision=revision))
+        with self._write() as connection:
+            current = self._required_session(connection, session_id)
+            self._ensure_active_session(current)
+            if current.head_revision_id != session.head_revision_id:
+                raise InvalidTransitionError("Session head changed during offline revision import")
+            connection.execute(
+                """
+                INSERT INTO logical_runs(
+                    logical_run_id, session_id, execution_id,
+                    expected_head_revision_id, model, model_profile_id, idempotency_key,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    logical_run_id,
+                    session_id,
+                    execution_id,
+                    session.head_revision_id,
+                    model,
+                    model_profile_id,
+                    f"offline-import:{revision_id}",
+                    LogicalRunStatus.completed.value,
+                    _dt(now),
+                    _dt(now),
+                ),
             )
-            self.state_files.write_revision(RevisionStateFile(revision=revision))
-            with self._write() as connection:
-                current = self._required_session(connection, session_id)
-                self._ensure_active_session(current)
-                if current.head_revision_id != session.head_revision_id:
-                    raise InvalidTransitionError("Session head changed during offline revision import")
-                connection.execute(
-                    """
-                    INSERT INTO logical_runs(
-                        logical_run_id, session_id, execution_id,
-                        expected_head_revision_id, model, model_profile_id, idempotency_key,
-                        status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        logical_run_id,
-                        session_id,
-                        execution_id,
-                        session.head_revision_id,
-                        model,
-                        model_profile_id,
-                        f"offline-import:{revision_id}",
-                        LogicalRunStatus.completed.value,
-                        _dt(now),
-                        _dt(now),
-                    ),
-                )
-                connection.execute(
-                    """
-                    INSERT INTO executions(
-                        execution_id, logical_run_id, status, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        execution_id,
-                        logical_run_id,
-                        LogicalRunStatus.completed.value,
-                        _dt(now),
-                        _dt(now),
-                    ),
-                )
-                self._insert_revision_metadata(connection, revision, input_preview=None)
-                connection.execute(
-                    "UPDATE sessions SET head_revision_id = ?, updated_at = ? WHERE session_id = ?",
-                    (revision_id, _dt(now), session_id),
-                )
-                self._prune_session_turns(connection, session_id)
-            self._cleanup_orphan_state_files()
-            return revision
+            connection.execute(
+                """
+                INSERT INTO executions(
+                    execution_id, logical_run_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    execution_id,
+                    logical_run_id,
+                    LogicalRunStatus.completed.value,
+                    _dt(now),
+                    _dt(now),
+                ),
+            )
+            self._insert_revision_metadata(connection, revision, input_preview=None)
+            connection.execute(
+                "UPDATE sessions SET head_revision_id = ?, updated_at = ? WHERE session_id = ?",
+                (revision_id, _dt(now), session_id),
+            )
+            self._prune_session_turns(connection, session_id)
+        self._cleanup_orphan_state_files()
+        return revision
 
     def commit_revision(
         self,
@@ -1288,150 +1245,145 @@ class SQLiteSessionStore:
     ) -> tuple[RevisionRecord, EventRecord | None]:
         if terminal_status not in _TERMINAL_RUN_STATES:
             raise ValueError("A committed revision requires a terminal run status")
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM logical_runs WHERE logical_run_id = ?",
-                (logical_run_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            "SELECT * FROM logical_runs WHERE logical_run_id = ?",
+            (logical_run_id,),
+        ).fetchone()
         if row is None:
             raise KeyError(logical_run_id)
         initial_run = self._run_from_row(row)
         now = utc_now()
-        with self.state_files.session_lock(initial_run.session_id):
-            session = self.get_session(initial_run.session_id)
-            if session is None:
-                raise KeyError(initial_run.session_id)
-            self._ensure_active_session(session)
-            with self._lock:
-                existing_row = self._connection.execute(
-                    """
-                    SELECT * FROM revisions
-                    WHERE logical_run_id = ? AND commit_kind = ?
-                    """,
-                    (logical_run_id, commit_kind),
-                ).fetchone()
-            if existing_row is not None:
-                revision = self._revision_from_row(existing_row)
-                if self._revision_payload(revision) != payload:
-                    raise ValueError("Terminal revision idempotency key has different payload")
-            else:
-                revision = RevisionRecord(
-                    revision_id=str(uuid.uuid4()),
-                    session_id=initial_run.session_id,
-                    logical_run_id=logical_run_id,
-                    commit_kind=commit_kind,
-                    parent_revision_id=initial_run.expected_head_revision_id,
-                    message_history=payload.message_history,
-                    resumable_state=payload.resumable_state,
-                    input_ledger=payload.input_ledger,
-                    display_projection=payload.display_projection,
-                    usage=payload.usage,
-                    terminal=payload.terminal,
-                    created_at=now,
-                )
-                self.state_files.write_revision(RevisionStateFile(revision=revision))
+        session = self.get_session(initial_run.session_id)
+        if session is None:
+            raise KeyError(initial_run.session_id)
+        self._ensure_active_session(session)
+        existing_row = self._connection.execute(
+            """
+            SELECT * FROM revisions
+            WHERE logical_run_id = ? AND commit_kind = ?
+            """,
+            (logical_run_id, commit_kind),
+        ).fetchone()
+        if existing_row is not None:
+            revision = self._revision_from_row(existing_row)
+            if self._revision_payload(revision) != payload:
+                raise ValueError("Terminal revision idempotency key has different payload")
+        else:
+            revision = RevisionRecord(
+                revision_id=str(uuid.uuid4()),
+                session_id=initial_run.session_id,
+                logical_run_id=logical_run_id,
+                commit_kind=commit_kind,
+                parent_revision_id=initial_run.expected_head_revision_id,
+                message_history=payload.message_history,
+                resumable_state=payload.resumable_state,
+                input_ledger=payload.input_ledger,
+                display_projection=payload.display_projection,
+                usage=payload.usage,
+                terminal=payload.terminal,
+                created_at=now,
+            )
+            self.state_files.write_revision(RevisionStateFile(revision=revision))
 
-            with self._write() as connection:
-                run = self._run_from_row(
-                    self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id)
-                )
-                session = self._required_session(connection, run.session_id)
-                self._ensure_active_session(session)
-                published = connection.execute(
-                    """
-                    SELECT revision_id FROM revisions
-                    WHERE logical_run_id = ? AND commit_kind = ?
-                    """,
-                    (logical_run_id, commit_kind),
-                ).fetchone()
-                if published is None:
-                    if terminal_status not in _RUN_TRANSITIONS[run.status]:
-                        raise InvalidTransitionError(
-                            f"Cannot transition run from {run.status.value} to {terminal_status.value}"
-                        )
-                    input_row = connection.execute(
-                        "SELECT content_json FROM run_inputs WHERE logical_run_id = ? AND order_index = 0",
-                        (logical_run_id,),
-                    ).fetchone()
-                    input_preview = (
-                        _preview_json_values(_array(input_row["content_json"])) if input_row is not None else None
+        with self._write() as connection:
+            run = self._run_from_row(self._required_row(connection, "logical_runs", "logical_run_id", logical_run_id))
+            session = self._required_session(connection, run.session_id)
+            self._ensure_active_session(session)
+            published = connection.execute(
+                """
+                SELECT revision_id FROM revisions
+                WHERE logical_run_id = ? AND commit_kind = ?
+                """,
+                (logical_run_id, commit_kind),
+            ).fetchone()
+            if published is None:
+                if terminal_status not in _RUN_TRANSITIONS[run.status]:
+                    raise InvalidTransitionError(
+                        f"Cannot transition run from {run.status.value} to {terminal_status.value}"
                     )
-                    self._insert_revision_metadata(
-                        connection,
-                        revision,
-                        input_preview=input_preview,
-                    )
-                    cursor = connection.execute(
-                        """
-                        UPDATE sessions
-                        SET head_revision_id = ?, updated_at = ?
-                        WHERE session_id = ? AND status = ?
-                        """,
-                        (
-                            revision.revision_id,
-                            _dt(now),
-                            run.session_id,
-                            SessionStatus.active.value,
-                        ),
-                    )
-                    if cursor.rowcount != 1:
-                        raise TombstonedSessionError(f"Session {run.session_id!r} is tombstoned")
-                    connection.execute(
-                        """
-                        UPDATE run_inputs
-                        SET state = ?, rejection_reason = ?, updated_at = ?
-                        WHERE logical_run_id = ? AND state IN (?, ?)
-                        """,
-                        (
-                            InputState.rejected.value,
-                            f"run terminated as {terminal_status.value} before input application",
-                            _dt(now),
-                            logical_run_id,
-                            InputState.accepted.value,
-                            InputState.enqueued.value,
-                        ),
-                    )
-                    connection.execute(
-                        """
-                        UPDATE logical_runs
-                        SET status = ?, pending_action_batch_id = NULL,
-                            updated_at = ? WHERE logical_run_id = ?
-                        """,
-                        (terminal_status.value, _dt(now), logical_run_id),
-                    )
-                    connection.execute(
-                        """
-                        UPDATE executions SET status = ?, updated_at = ?
-                        WHERE execution_id = ?
-                        """,
-                        (terminal_status.value, _dt(now), run.execution_id),
-                    )
-                elif published["revision_id"] != revision.revision_id:
-                    raise RuntimeError("Revision publication disagrees with its state file")
-                connection.execute(
-                    "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+                input_row = connection.execute(
+                    "SELECT content_json FROM run_inputs WHERE logical_run_id = ? AND order_index = 0",
                     (logical_run_id,),
+                ).fetchone()
+                input_preview = (
+                    _preview_json_values(_array(input_row["content_json"])) if input_row is not None else None
                 )
-                event = (
-                    self._append_event(
-                        connection,
-                        revision.session_id,
-                        event_type,
-                        {"revision_id": revision.revision_id, **payload.terminal},
-                        event_id=f"terminal:{logical_run_id}",
-                        logical_run_id=logical_run_id,
-                        now=now,
-                    )
-                    if event_type is not None
-                    else None
+                self._insert_revision_metadata(
+                    connection,
+                    revision,
+                    input_preview=input_preview,
                 )
-                self._prune_session_turns(connection, run.session_id)
-            try:
-                self.state_files.remove_checkpoint(run.session_id, run.execution_id)
-            except OSError as exc:
-                logger.warning("Deferred checkpoint-file cleanup after filesystem error: %s", exc)
-            self._cleanup_orphan_state_files()
-            return revision, event
+                cursor = connection.execute(
+                    """
+                    UPDATE sessions
+                    SET head_revision_id = ?, updated_at = ?
+                    WHERE session_id = ? AND status = ?
+                    """,
+                    (
+                        revision.revision_id,
+                        _dt(now),
+                        run.session_id,
+                        SessionStatus.active.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise TombstonedSessionError(f"Session {run.session_id!r} is tombstoned")
+                connection.execute(
+                    """
+                    UPDATE run_inputs
+                    SET state = ?, rejection_reason = ?, updated_at = ?
+                    WHERE logical_run_id = ? AND state IN (?, ?)
+                    """,
+                    (
+                        InputState.rejected.value,
+                        f"run terminated as {terminal_status.value} before input application",
+                        _dt(now),
+                        logical_run_id,
+                        InputState.accepted.value,
+                        InputState.enqueued.value,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE logical_runs
+                    SET status = ?, pending_action_batch_id = NULL,
+                        updated_at = ? WHERE logical_run_id = ?
+                    """,
+                    (terminal_status.value, _dt(now), logical_run_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE executions SET status = ?, updated_at = ?
+                    WHERE execution_id = ?
+                    """,
+                    (terminal_status.value, _dt(now), run.execution_id),
+                )
+            elif published["revision_id"] != revision.revision_id:
+                raise RuntimeError("Revision publication disagrees with its state file")
+            connection.execute(
+                "DELETE FROM execution_checkpoints WHERE logical_run_id = ?",
+                (logical_run_id,),
+            )
+            event = (
+                self._append_event(
+                    connection,
+                    revision.session_id,
+                    event_type,
+                    {"revision_id": revision.revision_id, **payload.terminal},
+                    event_id=f"terminal:{logical_run_id}",
+                    logical_run_id=logical_run_id,
+                    now=now,
+                )
+                if event_type is not None
+                else None
+            )
+            self._prune_session_turns(connection, run.session_id)
+        try:
+            self.state_files.remove_checkpoint(run.session_id, run.execution_id)
+        except OSError as exc:
+            logger.warning("Deferred checkpoint-file cleanup after filesystem error: %s", exc)
+        self._cleanup_orphan_state_files()
+        return revision, event
 
     def _insert_revision_metadata(
         self,
@@ -1463,16 +1415,14 @@ class SQLiteSessionStore:
         )
 
     def get_revision(self, revision_id: str) -> RevisionRecord | None:
-        with self._lock:
-            row = self._connection.execute("SELECT * FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
+        row = self._connection.execute("SELECT * FROM revisions WHERE revision_id = ?", (revision_id,)).fetchone()
         return self._revision_from_row(row) if row is not None else None
 
     def get_revision_for_run(self, logical_run_id: str) -> RevisionRecord | None:
-        with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM revisions WHERE logical_run_id = ? ORDER BY created_at DESC LIMIT 1",
-                (logical_run_id,),
-            ).fetchone()
+        row = self._connection.execute(
+            "SELECT * FROM revisions WHERE logical_run_id = ? ORDER BY created_at DESC LIMIT 1",
+            (logical_run_id,),
+        ).fetchone()
         return self._revision_from_row(row) if row is not None else None
 
     def append_event(
@@ -1558,15 +1508,14 @@ class SQLiteSessionStore:
     ) -> tuple[EventRecord, ...]:
         if after_sequence < 0 or limit < 0:
             raise ValueError("after_sequence and limit must be non-negative")
-        with self._lock:
-            rows = self._connection.execute(
-                """
-                SELECT * FROM session_events
-                WHERE session_id = ? AND sequence > ?
-                ORDER BY sequence LIMIT ?
-                """,
-                (session_id, after_sequence, limit),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT * FROM session_events
+            WHERE session_id = ? AND sequence > ?
+            ORDER BY sequence LIMIT ?
+            """,
+            (session_id, after_sequence, limit),
+        ).fetchall()
         return tuple(self._event_from_row(row) for row in rows)
 
     def create_action_batch(
@@ -1653,11 +1602,10 @@ class SQLiteSessionStore:
             return self._action_batch(connection, resolved_id)
 
     def get_action_batch(self, batch_id: str) -> ActionBatch | None:
-        with self._lock:
-            exists = self._connection.execute("SELECT 1 FROM action_batches WHERE batch_id = ?", (batch_id,)).fetchone()
-            if exists is None:
-                return None
-            return self._action_batch(self._connection, batch_id)
+        exists = self._connection.execute("SELECT 1 FROM action_batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        if exists is None:
+            return None
+        return self._action_batch(self._connection, batch_id)
 
     def decide_action(
         self,
@@ -1905,51 +1853,6 @@ class SQLiteSessionStore:
             payload=_object(row["payload_json"]),
             created_at=_parse_required_dt(row["created_at"]),
         )
-
-
-def _reset_disposable_legacy_database(path: Path) -> None:
-    """Replace the disposable schema-v5 store at the explicit v6 cutover boundary."""
-    if not path.exists():
-        return
-    try:
-        with closing(sqlite3.connect(path)) as connection:
-            marker_table = connection.execute(
-                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'schema_metadata'"
-            ).fetchone()
-            if marker_table is None:
-                return
-            marker = connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
-            schema_fingerprint = _schema_fingerprint(connection)
-    except sqlite3.DatabaseError:
-        return
-    if (
-        marker is None
-        or str(marker[0]) not in _LEGACY_RESET_SCHEMA_VERSIONS
-        or schema_fingerprint != _LEGACY_SCHEMA_V5_FINGERPRINT
-    ):
-        return
-    logger.warning(
-        "Resetting disposable YAACLI schema-v%s data at %s for the file-state cutover",
-        marker[0],
-        path,
-    )
-    for candidate in (path, path.with_name(f"{path.name}-wal"), path.with_name(f"{path.name}-shm")):
-        candidate.unlink(missing_ok=True)
-
-
-def _schema_fingerprint(connection: sqlite3.Connection) -> str:
-    rows = connection.execute(
-        """
-        SELECT type, name, sql
-        FROM sqlite_schema
-        WHERE type IN ('table', 'index')
-          AND name NOT LIKE 'sqlite_%'
-          AND sql IS NOT NULL
-        ORDER BY type, name
-        """
-    ).fetchall()
-    payload = "\n".join(f"{row[0]}:{row[1]}:{' '.join(str(row[2]).strip().removesuffix(';').split())}" for row in rows)
-    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _preview_json_values(values: Sequence[JsonValue]) -> str | None:

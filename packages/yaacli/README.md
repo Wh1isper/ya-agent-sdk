@@ -150,20 +150,22 @@ Inspect or delete durable sessions without starting the TUI:
 yaacli sessions list
 yaacli sessions show <session-id>
 yaacli sessions delete <session-id>
+yaacli sessions maintain
 ```
 
 Session IDs may be supplied by unique prefix. The YAACLI 2 product store defaults to
 `~/.yaacli/sessions/sessions-v2.sqlite3`. SQLite contains only transactional metadata
 and small coordination records; grep-friendly revision, checkpoint, and child payloads
 live beside it under `<session-id>/{revisions,checkpoints,subagents}/<id>/state.json`.
-The schema-v5 YAACLI 2 database is intentionally reset in place at this file-state
-cutover; no v3 database or payload migration is created. The former `sessions.sqlite3`
-is left untouched. An explicit `[session] database_path` or `YAACLI_DATABASE_PATH`
-remains authoritative, with state directories placed next to that database. Startup
-maintenance retains 20 complete turns per session and 100 quiescent sessions by
-default; `[session] max_turns_per_session`, `max_sessions`, and the optional
-`max_session_age_days` tune these limits. Nonterminal main and child work is never
-automatically selected for deletion. See
+Schema-v5 and other incompatible databases are rejected without runtime migration,
+reset, or modification. The former `sessions.sqlite3` is left untouched. An explicit
+`[session] database_path` or `YAACLI_DATABASE_PATH` remains authoritative, with state
+directories placed next to that database. Run `yaacli sessions maintain` explicitly,
+while no other YAACLI process is using that store, to apply retention and storage
+maintenance; it is never part of startup. `[session] max_turns_per_session`,
+`max_sessions`, and the optional
+`max_session_age_days` define its retention limits. Nonterminal main and child work is
+never selected for automatic deletion. See
 [`spec/05-session-persistence.md`](spec/05-session-persistence.md).
 
 ## TUI Interaction
@@ -194,7 +196,7 @@ The YA Claw deployment skill lives in `skills/ya-claw-deploy/` and is published 
 
 The repository sync script keeps bundled skill files under `packages/yaacli/yaacli/skills/` aligned.
 
-YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. The visible transcript and prompt history retain the original input; the model receives a catalog-grounded explicit-selection marker plus the remaining task. A slash prefix that matches neither a registered command nor an available skill is submitted as ordinary user input.
+YAACLI refreshes and resolves `/skill-name` against the effective SDK skill catalog at submission time, including built-in, global, shared, and project skills after normal priority rules. Like a configured prompt command, the visible transcript and model input contain one `Use this skill: <name>` line per selected skill followed by the remaining task as `User instructions: <task>`; prompt history retains the original slash input for editing and reuse. A slash prefix that matches neither a registered command nor an available skill is submitted as ordinary user input.
 
 ## CodeAct
 

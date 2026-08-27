@@ -75,13 +75,11 @@ A subagent file is a versioned, self-contained document containing:
 - the complete `SubagentExecutionRecord`;
 - persisted child inputs and their transitions;
 - input-open and cancellation fences;
-- the owning process ID plus a unique process-generation token backed by a process-held
-  filesystem lock, used to distinguish dead-process orphans from children owned by
-  another live terminal; and
+- the owning process ID plus a process-generation token used to distinguish current-process work from retained work after restart; and
 - creation and update timestamps.
 
-Each child owns a separate file. Concurrent children never read-modify-write one shared
-session document.
+Each child owns a separate file. YAACLI performs state transitions sequentially inside
+one process and does not coordinate concurrent writers to the same durable store.
 
 ## Data Model
 
@@ -128,9 +126,9 @@ Large state uses file-first publication:
 
 A crash before the SQLite commit can leave an orphan file, but SQLite never publishes
 a revision or checkpoint whose file was not already installed. Session directories
-carry an explicit YAACLI ownership marker; startup maintenance locks and re-reads one
-marked session at a time before removing its orphans. Unmarked sibling directories are
-never claimed or deleted.
+carry an explicit YAACLI ownership marker; explicit maintenance re-reads marked
+sessions before removing orphans. Unmarked sibling directories are never claimed or
+deleted.
 
 Retention uses the reverse order: commit metadata deletion first, then remove the now
 unreferenced files. A failed file deletion therefore leaves only an orphan, which a
@@ -221,9 +219,8 @@ but model/tool execution is process-owned and is not resumed automatically.
 
 Consequences:
 
-- frontend startup marks `pending`, `running`, or `suspended` children whose exact
-  process-generation lock is no longer held `lost` and rejects unresolved child input,
-  while leaving children owned by another live terminal untouched;
+- frontend startup marks retained `pending`, `running`, or `suspended` children whose
+  process-generation token differs from the current process `lost` and rejects unresolved child input;
 - terminal child records remain inspectable after completion;
 - exact descriptors are embedded in each child file and restored lazily for linked
   continuation or nested authorization;
@@ -240,30 +237,18 @@ Consequences:
 The TUI's `/agents` view scans only the current session's child files. Switching sessions
 does not reparent work.
 
-## Locking and Tombstone Fence
+## Single-Process Ownership
 
-Locks are scoped by `session_id`, not global. Different terminals/sessions use different
-lock files and remain concurrent. The lock covers only short local state transitions:
-owner-status validation, JSON replacement, and tombstone fencing. Model calls, tool
-calls, child execution, waits, and network operations never hold it.
+YAACLI uses no application-level filesystem locks for session, checkpoint, revision, or
+subagent state. One process owns one configured durable store at a time; concurrent
+writers to the same store are unsupported. Within that process, synchronous SQLite and
+file-state transitions run sequentially.
 
-All children in one session briefly share the session lifecycle lock, but each child
-writes its own state file. This prevents a tombstone/write race without creating a
-shared-document lost-update problem. A separate global lock covers only the short child
-execution-ID creation claim; it never covers execution, steering, waits, or ordinary
-state writes.
-
-Tombstoning follows this order while holding the owner session lock:
-
-1. verify no main logical run is nonterminal;
-2. commit the SQLite session tombstone;
-3. mark nonterminal children cancelled;
-4. reject unresolved child input; and
-5. persist child cancellation intent before releasing the lock.
-
-Child writes acquire the same session lock and recheck the SQLite owner status. A write
-that starts after tombstone publication is rejected, and a pre-tombstone writer cannot
-escape after the fence. Different sessions are unaffected.
+SQLite transactions remain the authority for metadata publication and state-transition
+validation. Large JSON documents use temporary-file publication, `fsync`, and
+`os.replace` for crash safety, not concurrency control. Tombstoning first verifies that
+main work is terminal, commits the SQLite tombstone, then fences retained child state.
+Child writes recheck the SQLite owner status before publication.
 
 ## Retention and Maintenance
 
@@ -271,28 +256,27 @@ Retention keeps the configured number of complete terminal run bundles per sessi
 the configured number/age of quiescent sessions. It never deletes nonterminal main or
 child work.
 
-Startup maintenance:
+`yaacli sessions maintain` runs one explicit store maintenance pass while no other
+YAACLI process is using the configured store. Maintenance is not part of TUI or headless
+startup. A pass:
 
 1. physically purges previously tombstoned, quiescent sessions;
 2. prunes complete old run bundles;
-3. tombstones only quiescent count/age candidates under their individual session locks;
+3. tombstones only quiescent count/age candidates;
 4. removes orphan revision/checkpoint files and directories for purged sessions;
 5. performs a passive WAL checkpoint; and
 6. runs rate-limited `VACUUM` only when configured thresholds permit it.
 
-`VACUUM` is never part of a product write transaction. Busy-database failures defer it
-rather than blocking or failing startup.
+`VACUUM` is never part of a product write transaction. Busy-database failures defer it.
 
 ## Schema Cutover
 
 The internal SQLite schema marker is version 6. The default path is still
 `<session_dir>/sessions-v2.sqlite3`.
 
-Schema-v5 YAACLI 2 data is intentionally disposable for this cutover. When the known v5
-marker is found, YAACLI explicitly deletes and recreates the same database path; no
-payload migration, dual read, or v3 database is created. The complete normalized schema-v5 object set is fingerprinted before destructive
-cutover under a sibling filesystem lock. Other incompatible, malformed, or unmarked
-databases are rejected rather than silently interpreted.
+YAACLI performs no runtime schema reset or migration. Schema-v5 and other incompatible,
+malformed, or unmarked databases are rejected without modification. Migration or store
+recreation is an explicit offline operation.
 
 The former pre-2.0 default `sessions.sqlite3` remains untouched and is not migrated.
 
@@ -300,7 +284,7 @@ The former pre-2.0 default `sessions.sqlite3` remains untouched and is not migra
 
 Tests cover:
 
-- schema-v5 destructive cutover at the same path and strict rejection of unknown schema;
+- non-destructive rejection of schema-v5 and unknown schemas;
 - absence of subagent tables and large revision/checkpoint columns in SQLite;
 - grep-readable revision, checkpoint, and child files;
 - file-first publication and orphan cleanup;
@@ -311,6 +295,6 @@ Tests cover:
 - process-local child deferred continuation, cumulative usage, persisted steering,
   owner fencing, exact descriptor restoration, terminal inspection, and startup
   orphan-to-lost recovery;
-- independent session-lock concurrency and same-session multi-child writes;
+- lock-free sequential child state transitions and absence of filesystem lock files;
 - retention refusal for nonterminal main or child work; and
 - identical revision semantics in TUI and headless frontends.
