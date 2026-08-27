@@ -114,7 +114,8 @@ The task pane reads the current SDK `TaskManager` snapshot directly.
 The compose buffer uses `SlashCommandCompleter`.
 
 - Command names complete from built-in and configured commands.
-- Effective skill names from `AgentContext.available_skills` complete as `/skill-name`.
+- Effective non-reserved skill names from `AgentContext.available_skills` complete as `/skill-name`.
+- When a skill and configured prompt command share a name, the single completion is labeled as a skill.
 - After one skill is selected, completion supports additional leading skill tokens while excluding duplicates.
 - `/session <prefix>` completes confirmed session IDs.
 - A `CompletionsMenu` float makes suggestions visible.
@@ -175,7 +176,7 @@ The compose area is three rows on small terminals and five rows otherwise. It su
 | Command/Shell/Saving/Cancelling | Ordinary and idle-only control drafts are preserved; busy-safe commands retain local semantics |
 | Any phase with background result ready | Shows session-scoped readiness only; the next accepting agent boundary receives canonical durable completion input |
 
-Registered `/command` tokens and the `!` namespace are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. For slash tokens that are not known commands, YAACLI synchronously reserves foreground ownership and snapshots the submitted attachments, refreshes `AgentContext.available_skills`, and only then classifies the submitted text, so runtime skill additions, removals, and overrides cannot race dispatch. Attachments added during that refresh remain queued for the next prompt. Existing built-in and configured commands take precedence when the first token conflicts with a skill name. If no command or skill matches, the complete slash-prefixed text is ordinary user input, allowing prompts such as `/home/user/file is the input`. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before routing; if the user deleted the chip, the binary is dropped before dispatch.
+Registered `/command` tokens and the `!` namespace are classified before prompt, steering, or HITL-result parsing. While idle, one or more consecutive leading `/skill-name` tokens that match the effective skill catalog create an explicit skill-selection prompt; the remaining text is the task. Reserved built-in commands retain control-plane precedence. Every other slash token synchronously reserves foreground ownership and snapshots the submitted attachments, refreshes `AgentContext.available_skills`, and only then resolves an available skill before a same-named configured prompt command, so runtime skill additions, removals, and overrides cannot race dispatch. Attachments added during that refresh remain queued for the next prompt. If no command or skill matches, the complete slash-prefixed text is ordinary user input, allowing prompts such as `/home/user/file is the input`. Idle-only/custom slash commands and direct shell input are rejected while busy rather than sent to the model. Generated attachment-chip text is removed before routing; if the user deleted the chip, the binary is dropped before dispatch.
 
 The model-facing skill-selection block contains only escaped, catalog-grounded names and paths plus the task; it does not inject skill bodies. The transcript and prompt history retain the original user text. The agent still inspects each selected `SKILL.md` and applies the SDK skill activation policy.
 

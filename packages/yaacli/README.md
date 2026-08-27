@@ -182,7 +182,7 @@ The output viewport has priority over auxiliary UI. The task pane is hidden when
 - `/tool <call-id>` shows the complete retained result for a tool call.
 - `/session <id>` restores a saved session. The CLI equivalent is `yaacli --session <id>`.
 - Use `/help` for the complete built-in and configured command list. Slash commands and available skills complete while typing.
-- Prefix an idle prompt with one or more available skill names to request them explicitly: `/lark-cli /agent-builder Build an agent that replies in Lark`. Only the leading consecutive `/skill-name` tokens are selected. If the first token is also a built-in or configured command, command dispatch takes precedence.
+- Prefix an idle prompt with one or more available skill names to request them explicitly: `/lark-cli /agent-builder Build an agent that replies in Lark`. Only the leading consecutive `/skill-name` tokens are selected. Reserved built-in commands keep control-plane precedence; an available skill takes precedence over a configured prompt command with the same name.
 - The interactive TUI enables `ask_user_question` by default. When the agent needs clarification, YAACLI renders one to four structured questions and accepts an option number, comma-separated numbers for multi-select questions, or free text.
 - Long status text wraps to the available terminal width. Foreground elapsed time uses compact forms such as `42s`, `3m 05s`, and `1h 05m 09s`.
 

@@ -121,13 +121,15 @@ Routing order is intentional:
 
 1. reject input while a session transition is active;
 2. reconcile attachment chips and queued binaries;
-3. recognize registered `/command` tokens and the `!` namespace;
+3. recognize reserved built-in `/command` tokens, configured prompt commands, and the
+   `!` namespace;
 4. dispatch busy-safe commands and reject idle-only/custom commands while busy;
 5. parse explicit HITL decisions/results when an action is pending;
 6. during an active agent phase, persist ordinary text for that logical run;
 7. during non-agent foreground work, preserve the draft and ask the user to wait; and
-8. while idle, dispatch a command, explicit skill invocation, shell command, or new
-   durable turn.
+8. while idle, preserve reserved built-in command precedence, then refresh the skill
+   catalog and resolve an explicit skill before a same-named configured prompt command,
+   shell command, or new durable turn.
 
 Busy-safe commands are `/cancel`, `/agents`, `/process`, `/cost`, `/help`,
 `/attachments`, `/paste-image`, `/remove-image`, and `/tool`. `/integrate` is not a 2.0

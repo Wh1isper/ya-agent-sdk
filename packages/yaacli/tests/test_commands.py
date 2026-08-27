@@ -371,7 +371,7 @@ def test_parse_skill_invocation_supports_multiple_prefixes() -> None:
     assert formatted.endswith("Build an agent")
 
 
-def test_parse_skill_invocation_preserves_command_precedence() -> None:
+def test_parse_skill_invocation_preserves_reserved_command_precedence() -> None:
     skills = {"help": AvailableSkill(name="help", description="Help", path="/skills/help")}
 
     assert parse_skill_invocation("/help me", skills, command_names=["/help"]) is None
@@ -405,3 +405,15 @@ def test_slash_command_completer_completes_multiple_skills() -> None:
 
     assert [(item.text, item.display_meta_text) for item in first] == [("/lark-cli", "skill")]
     assert [(item.text, item.display_meta_text) for item in second] == [("/agent-builder", "skill")]
+
+
+def test_slash_command_completer_labels_skill_command_collision_as_skill() -> None:
+    completer = SlashCommandCompleter(
+        command_provider=lambda: ["/commit-push-pr"],
+        session_provider=lambda: [],
+        skill_provider=lambda: ["/commit-push-pr"],
+    )
+
+    completions = list(completer.get_completions(Document("/commit"), CompleteEvent()))
+
+    assert [(item.text, item.display_meta_text) for item in completions] == [("/commit-push-pr", "skill")]

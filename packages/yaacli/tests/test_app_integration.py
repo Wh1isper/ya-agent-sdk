@@ -1727,6 +1727,103 @@ async def test_tui_app_refreshes_skill_catalog_before_slash_classification() -> 
 
 
 @pytest.mark.asyncio
+async def test_tui_app_prefers_skill_over_same_named_custom_command() -> None:
+    config = MockConfig(
+        commands={
+            "commit-push-pr": CommandDefinition(
+                prompt="Run the configured command prompt.",
+                description="Commit, push, and open a PR",
+            )
+        }
+    )
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+    app._skill_toolset = MagicMock()
+
+    async def refresh_context(ctx: TUIContext) -> None:
+        ctx.available_skills = {
+            "commit-push-pr": AvailableSkill(
+                name="commit-push-pr",
+                description="Repository workflow",
+                path="/skills/commit-push-pr",
+            )
+        }
+
+    app._skill_toolset.refresh_context = AsyncMock(side_effect=refresh_context)
+    app._launch_agent = MagicMock(return_value=True)  # type: ignore[method-assign]
+    input_area = TextArea(multiline=True)
+    submitted = "/commit-push-pr polish tests"
+
+    app._submit_input(submitted, input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    await dispatch_task
+
+    app._launch_agent.assert_called_once()
+    prompt = app._launch_agent.call_args.args[0]
+    assert '<skill name="commit-push-pr" path="/skills/commit-push-pr" />' in prompt
+    assert prompt.endswith("polish tests")
+    assert "Run the configured command prompt." not in prompt
+    assert app._launch_agent.call_args.kwargs["session_input"] == submitted
+
+
+@pytest.mark.asyncio
+async def test_tui_app_custom_command_refresh_preserves_new_compose_input() -> None:
+    config = MockConfig(commands={"commit": CommandDefinition(prompt="commit changes")})
+    app = TUIApp(config=config, config_manager=MockConfigManager())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def refresh_context(ctx: TUIContext) -> None:
+        refresh_started.set()
+        await release_refresh.wait()
+
+    app._skill_toolset = MagicMock()
+    app._skill_toolset.refresh_context = AsyncMock(side_effect=refresh_context)
+    app._launch_agent = MagicMock(return_value=True)  # type: ignore[method-assign]
+    original_placeholder = app._format_attachment_placeholder(1, "image/png", 3)
+    original = PendingAttachment(
+        data=b"old",
+        media_type="image/png",
+        size_bytes=3,
+        placeholder=original_placeholder,
+    )
+    app._pending_attachments = [original]
+    submitted_compose = f"{original_placeholder} /commit"
+    input_area = TextArea(text=submitted_compose, multiline=True)
+
+    app._submit_input(input_area.buffer.text, input_area)
+    dispatch_task = app._foreground_command_task
+    assert dispatch_task is not None
+    await asyncio.wait_for(refresh_started.wait(), timeout=1)
+
+    new_placeholder = app._format_attachment_placeholder(2, "image/png", 3)
+    new_attachment = PendingAttachment(
+        data=b"new",
+        media_type="image/png",
+        size_bytes=3,
+        placeholder=new_placeholder,
+    )
+    app._pending_attachments.append(new_attachment)
+    input_area.buffer.text = f"{submitted_compose} next draft {new_placeholder}"
+    input_area.buffer.cursor_position = len(input_area.buffer.text)
+
+    release_refresh.set()
+    await dispatch_task
+
+    app._launch_agent.assert_called_once_with("commit changes")
+    assert input_area.buffer.text == f"next draft {new_placeholder}"
+    assert [item.data for item in app._pending_attachments] == [b"old", b"new"]
+    assert app._pending_attachments[0].placeholder == ""
+    assert app._pending_attachments[1].placeholder == new_placeholder
+
+
+@pytest.mark.asyncio
 async def test_tui_app_submit_custom_slash_command():
     """Submitting a custom slash command expands and runs its configured prompt."""
     config = MockConfig(
