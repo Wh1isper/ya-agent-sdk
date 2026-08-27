@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import sqlite3
-import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -97,18 +95,17 @@ def test_product_database_contains_no_subagent_tables(tmp_path: Path) -> None:
     assert not any(name.startswith("subagent_") for name in names)
 
 
-async def test_session_locks_do_not_block_subagents_in_other_sessions(tmp_path: Path) -> None:
-    database_path = tmp_path / "independent-session-locks.sqlite3"
+async def test_file_subagent_store_creates_no_lock_files(tmp_path: Path) -> None:
+    database_path = tmp_path / "lock-free-subagents.sqlite3"
     product_store = SQLiteSessionStore(database_path)
-    product_store.create_session(str(tmp_path), session_id="session-a")
-    product_store.create_session(str(tmp_path), session_id="session-b")
+    product_store.create_session(str(tmp_path), session_id="session")
     store = FileSubagentExecutionStore(database_path)
     plan = _put_worker_descriptor(store)
     record = SubagentExecutionRecord(
-        root_execution_id="child-b",
-        execution_id="child-b",
-        owner_scope_id="session-b",
-        idempotency_key="child-b",
+        root_execution_id="child",
+        execution_id="child",
+        owner_scope_id="session",
+        idempotency_key="child",
         descriptor_id=plan.descriptor_id,
         plan_fingerprint=plan.fingerprint,
         route="worker",
@@ -118,36 +115,22 @@ async def test_session_locks_do_not_block_subagents_in_other_sessions(tmp_path: 
         parent_logical_run_id="parent-run",
         prompt="work",
     )
+
     await store.create(record)
-    completed = threading.Event()
-    errors: list[BaseException] = []
+    store.accept_input(
+        record.execution_id,
+        ["input"],
+        idempotency_key="input",
+        origin=InputOrigin.user,
+    )
 
-    def accept_other_session_input() -> None:
-        try:
-            store.accept_input(
-                record.execution_id,
-                ["independent"],
-                idempotency_key="independent",
-                origin=InputOrigin.user,
-            )
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-        finally:
-            completed.set()
-
-    with store.state_files.session_lock("session-a"):
-        thread = threading.Thread(target=accept_other_session_input)
-        thread.start()
-        assert completed.wait(timeout=2)
-    thread.join(timeout=2)
-
-    assert errors == []
-    assert store.list_inputs(record.execution_id)[0].content == ["independent"]
+    assert tuple(tmp_path.glob("*.lock")) == ()
+    assert store.list_inputs(record.execution_id)[0].content == ["input"]
     await store.close()
     product_store.close()
 
 
-async def test_same_session_children_keep_independent_state_under_concurrent_writes(
+async def test_same_session_children_keep_independent_state_under_sequential_writes(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "same-session-children.sqlite3"
@@ -174,49 +157,36 @@ async def test_same_session_children_keep_independent_state_under_concurrent_wri
     )
     for record in records:
         await store.create(record)
-    errors: list[BaseException] = []
+        for index in range(20):
+            store.accept_input(
+                record.execution_id,
+                [f"{record.execution_id}:{index}"],
+                idempotency_key=f"input-{index}",
+                origin=InputOrigin.user,
+            )
 
-    def write_inputs(record: SubagentExecutionRecord) -> None:
-        try:
-            for index in range(20):
-                store.accept_input(
-                    record.execution_id,
-                    [f"{record.execution_id}:{index}"],
-                    idempotency_key=f"input-{index}",
-                    origin=InputOrigin.user,
-                )
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-
-    threads = [threading.Thread(target=write_inputs, args=(record,)) for record in records]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-
-    assert errors == []
-    assert all(not thread.is_alive() for thread in threads)
     assert [len(store.list_inputs(record.execution_id)) for record in records] == [20, 20]
     assert all(store.state_files.subagent_path("session", record.execution_id).exists() for record in records)
     await store.close()
     product_store.close()
 
 
-async def test_concurrent_cross_session_create_claims_execution_id_once(tmp_path: Path) -> None:
+async def test_sequential_cross_session_create_rejects_duplicate_execution_id(tmp_path: Path) -> None:
     database_path = tmp_path / "global-execution-id.sqlite3"
     product_store = SQLiteSessionStore(database_path)
     product_store.create_session(str(tmp_path), session_id="session-a")
     product_store.create_session(str(tmp_path), session_id="session-b")
-    stores = (FileSubagentExecutionStore(database_path), FileSubagentExecutionStore(database_path))
-    plans = tuple(_put_worker_descriptor(store) for store in stores)
-    records = tuple(
-        SubagentExecutionRecord(
+    store = FileSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
+
+    def record(owner_scope_id: str, idempotency_key: str) -> SubagentExecutionRecord:
+        return SubagentExecutionRecord(
             root_execution_id="shared-execution",
             execution_id="shared-execution",
-            owner_scope_id=f"session-{'ab'[index]}",
-            idempotency_key=f"child-{index}",
-            descriptor_id=plans[index].descriptor_id,
-            plan_fingerprint=plans[index].fingerprint,
+            owner_scope_id=owner_scope_id,
+            idempotency_key=idempotency_key,
+            descriptor_id=plan.descriptor_id,
+            plan_fingerprint=plan.fingerprint,
             route="worker",
             mode=SubagentExecutionMode.background,
             state=SubagentExecutionState.running,
@@ -224,33 +194,12 @@ async def test_concurrent_cross_session_create_claims_execution_id_once(tmp_path
             parent_logical_run_id="parent-run",
             prompt="work",
         )
-        for index in range(2)
-    )
-    successes: list[SubagentExecutionRecord] = []
-    errors: list[BaseException] = []
-    barrier = threading.Barrier(2)
 
-    def create(store: FileSubagentExecutionStore, record: SubagentExecutionRecord) -> None:
-        barrier.wait()
-        try:
-            successes.append(asyncio.run(store.create(record)))
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
+    await store.create(record("session-a", "child-a"))
+    with pytest.raises(SubagentExecutionIdConflict):
+        await store.create(record("session-b", "child-b"))
 
-    threads = [
-        threading.Thread(target=create, args=(store, record)) for store, record in zip(stores, records, strict=True)
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=5)
-
-    assert len(successes) == 1
-    assert len(errors) == 1
-    assert isinstance(errors[0], SubagentExecutionIdConflict)
-    assert all(not thread.is_alive() for thread in threads)
-    for store in stores:
-        await store.close()
+    await store.close()
     product_store.close()
 
 

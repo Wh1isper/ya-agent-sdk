@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 from click.testing import CliRunner
 from yaacli.cli import cli
-from yaacli.config import YaacliConfig
+from yaacli.config import SessionConfig, YaacliConfig
 from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.models import RevisionPayload
 from yaacli.durable.sqlite import SQLiteSessionStore
@@ -31,9 +31,9 @@ def _seed_session(database_path: Path, *, session_id: str = "abc123def456") -> N
         )
 
 
-def _manager(database_path: Path) -> MagicMock:
+def _manager(database_path: Path, *, max_sessions: int = 100) -> MagicMock:
     manager = MagicMock()
-    manager.config = YaacliConfig()
+    manager.config = YaacliConfig(session=SessionConfig(max_sessions=max_sessions))
     manager.get_session_database_path.return_value = database_path
     return manager
 
@@ -74,6 +74,30 @@ def test_cli_sessions_list_show_and_delete_use_sqlite_store(
     empty_result = runner.invoke(cli, ["sessions", "list", "--json"])
     assert empty_result.exit_code == 0
     assert json.loads(empty_result.output) == []
+
+
+def test_cli_sessions_maintain_runs_configured_retention(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    database_path = tmp_path / "sessions.sqlite3"
+    with SQLiteSessionStore(database_path) as store:
+        for session_id in ("session-a", "session-b", "session-c"):
+            store.create_session("/workspace", session_id=session_id)
+    monkeypatch.setattr(
+        "yaacli.cli._prepare_session_cli_runtime",
+        MagicMock(return_value=_manager(database_path, max_sessions=2)),
+    )
+
+    result = CliRunner().invoke(cli, ["sessions", "maintain", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "pruned_turns": 0,
+        "purged_sessions": 0,
+        "tombstoned_sessions": 1,
+        "removed_orphan_files": 0,
+        "vacuumed": False,
+    }
+    with SQLiteSessionStore(database_path) as store:
+        assert len(store.list_sessions(limit=10)) == 2
 
 
 def test_cli_sessions_rejects_ambiguous_prefix(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -45,6 +45,8 @@ behavioral or architectural change.
   interrupted rather than replayed after a crash. YA Claw profiles use strict native
   schema v2; old profile data is handled only by explicit Alembic
   migration, never by runtime compatibility parsing.
+- One YAACLI process owns one configured durable store at a time. YAACLI does not use
+  application-level filesystem locks or support concurrent writers to that store.
 - User configuration is strict. Preserve an old key only when it normalizes exactly to
   one current behavior; otherwise remove it from code, templates, specs, and examples.
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from html import escape
 from typing import TYPE_CHECKING, Protocol
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -92,18 +91,10 @@ def format_skill_invocation(
     invocation: SkillInvocation,
     available_skills: Mapping[str, AvailableSkill],
 ) -> str:
-    """Build an explicit, catalog-grounded skill selection block."""
-    lines = [
-        "<explicit-skill-selection>",
-        "The user explicitly selected the following skills for this task. Inspect each SKILL.md, then activate it",
-        "and follow its applicable workflow. Treat this selection as a direct user request to use these skills.",
-    ]
-    for name in invocation.names:
-        skill = available_skills[name]
-        lines.append(f'  <skill name="{escape(skill.name, quote=True)}" path="{escape(skill.path, quote=True)}" />')
-    lines.append("</explicit-skill-selection>")
+    """Render selected skills as a direct user prompt."""
+    lines = [f"Use this skill: {available_skills[name].name}" for name in invocation.names]
     if invocation.prompt:
-        lines.extend(["", invocation.prompt])
+        lines.extend(["", f"User instructions: {invocation.prompt}"])
     return "\n".join(lines)
 
 

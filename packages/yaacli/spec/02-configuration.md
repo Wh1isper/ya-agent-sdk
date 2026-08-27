@@ -309,20 +309,24 @@ The session section controls durable database placement and startup restore:
 | `max_sessions` | `100` | Retain at most this many active, quiescent sessions |
 | `max_session_age_days` | unset | Optionally tombstone quiescent sessions older than this many days |
 
-Retention is safety-first. Nonterminal main or child work is never selected for automatic
-session tombstoning. Manual tombstoning refuses a nonterminal main run and atomically
-records nonterminal children as cancelled. A maintenance pass physically purges only previously tombstoned,
-now-quiescent sessions, then tombstones newly selected sessions; this two-pass boundary
-preserves the write fence and terminal-state check before physical deletion.
+Retention is safety-first and runs only through `yaacli sessions maintain`, while no
+other YAACLI process is using the configured store, not during startup. Nonterminal main
+or child work is never selected for automatic session
+tombstoning. Manual tombstoning refuses a nonterminal main run, commits the SQLite
+tombstone, then best-effort records retained nonterminal children as cancelled. Repeating
+the operation retries incomplete child fencing, and child writes recheck the SQLite owner
+status before publication. A maintenance pass physically purges only previously
+tombstoned, now-quiescent sessions, then tombstones newly selected sessions; this
+two-pass boundary preserves the write fence and terminal-state check before physical
+deletion.
 
 The `sessions-v2.sqlite3` name denotes the YAACLI 2 product-store generation, not the
 internal schema marker. SQLite stores metadata and small coordination records; revision,
 checkpoint, and child state files are placed in per-session directories next to the
-database. The known schema-v5 YAACLI database is intentionally reset at the same path
-for this cutover, with no payload migration or v3 database. YAACLI does not migrate or
-open the former default `sessions.sqlite3`; that file remains untouched. An explicit
-`database_path` or `YAACLI_DATABASE_PATH` is authoritative. Unknown incompatible or
-unmarked schemas remain strict errors.
+database. YAACLI rejects schema-v5 and other incompatible databases without runtime
+migration, reset, or modification. It does not migrate or open the former default
+`sessions.sqlite3`; that file remains untouched. An explicit `database_path` or
+`YAACLI_DATABASE_PATH` is authoritative.
 
 Every successful, failed, or cancelled logical run commits a terminal durable revision.
 The removed file-snapshot save and pruning switches do not control this invariant.
@@ -485,6 +489,7 @@ yaacli -p "prompt" --worker
 yaacli sessions list
 yaacli sessions show <session-id>
 yaacli sessions delete <session-id>
+yaacli sessions maintain
 ```
 
 `--profile` is a run-scoped override and does not update `state.json`. Selecting a profile through the interactive `/model` UI persists that choice for later launches.

@@ -1685,11 +1685,23 @@ async def test_tui_app_submit_multiple_skill_prefixes_as_agent_prompt() -> None:
 
     app._launch_agent.assert_called_once()
     prompt = app._launch_agent.call_args.args[0]
-    assert app._launch_agent.call_args.kwargs["session_input"] == "/lark-cli /agent-builder Build an agent"
-    assert '<skill name="lark-cli" path="/skills/lark-cli" />' in prompt
-    assert '<skill name="agent-builder" path="/skills/agent-builder" />' in prompt
-    assert prompt.endswith("Build an agent")
-    assert any("/lark-cli /agent-builder Build an agent" in line for line in app._output_lines)
+    assert app._launch_agent.call_args.kwargs == {}
+    assert prompt == ("Use this skill: lark-cli\nUse this skill: agent-builder\n\nUser instructions: Build an agent")
+    assert any("Use this skill: lark-cli" in line for line in app._output_lines)
+    assert any("User instructions: Build an agent" in line for line in app._output_lines)
+    assert all("/lark-cli /agent-builder" not in line for line in app._output_lines)
+    replay = app._display_replay.snapshot()
+    user_input_events = [event for event in replay if event.get("name") == "yaacli.user_input"]
+    assert user_input_events[-1]["value"] == {"text": prompt, "attachments": []}
+    assert app._prompt_history[-1] == "/lark-cli /agent-builder Build an agent"
+
+    restored = TUIApp(config=MockConfig(), config_manager=MockConfigManager())
+    restored._restore_output_from_display_events(replay)
+    restored_output = "\n".join(restored._output_lines)
+    assert "Use this skill: lark-cli" in restored_output
+    assert "Use this skill: agent-builder" in restored_output
+    assert "User instructions: Build an agent" in restored_output
+    assert "/lark-cli /agent-builder" not in restored_output
 
 
 @pytest.mark.asyncio
@@ -1722,8 +1734,7 @@ async def test_tui_app_refreshes_skill_catalog_before_slash_classification() -> 
     app._skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
     app._launch_agent.assert_called_once()
     prompt = app._launch_agent.call_args.args[0]
-    assert '<skill name="hot-skill" path="/skills/hot-skill" />' in prompt
-    assert prompt.endswith("Use the new workflow")
+    assert prompt == "Use this skill: hot-skill\n\nUser instructions: Use the new workflow"
 
 
 @pytest.mark.asyncio
@@ -1763,10 +1774,10 @@ async def test_tui_app_prefers_skill_over_same_named_custom_command() -> None:
 
     app._launch_agent.assert_called_once()
     prompt = app._launch_agent.call_args.args[0]
-    assert '<skill name="commit-push-pr" path="/skills/commit-push-pr" />' in prompt
-    assert prompt.endswith("polish tests")
+    assert prompt == "Use this skill: commit-push-pr\n\nUser instructions: polish tests"
     assert "Run the configured command prompt." not in prompt
-    assert app._launch_agent.call_args.kwargs["session_input"] == submitted
+    assert app._launch_agent.call_args.kwargs == {}
+    assert any("Use this skill: commit-push-pr" in line for line in app._output_lines)
 
 
 @pytest.mark.asyncio

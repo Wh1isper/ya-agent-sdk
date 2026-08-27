@@ -367,8 +367,7 @@ def test_parse_skill_invocation_supports_multiple_prefixes() -> None:
     assert invocation.names == ("lark-cli", "agent-builder")
     assert invocation.prompt == "Build an agent"
     formatted = format_skill_invocation(invocation, skills)
-    assert '<skill name="lark-cli" path="/skills/lark-cli" />' in formatted
-    assert formatted.endswith("Build an agent")
+    assert formatted == ("Use this skill: lark-cli\nUse this skill: agent-builder\n\nUser instructions: Build an agent")
 
 
 def test_parse_skill_invocation_preserves_reserved_command_precedence() -> None:
@@ -377,20 +376,18 @@ def test_parse_skill_invocation_preserves_reserved_command_precedence() -> None:
     assert parse_skill_invocation("/help me", skills, command_names=["/help"]) is None
 
 
-def test_format_skill_invocation_escapes_catalog_values() -> None:
+def test_format_skill_invocation_without_user_instructions() -> None:
     skills = {
-        'unsafe"name': AvailableSkill(
-            name='unsafe"name',
-            description="Unsafe",
-            path="/skills/a&b",
+        "review": AvailableSkill(
+            name="review",
+            description="Review code",
+            path="/skills/review",
         )
     }
-    invocation = parse_skill_invocation('/unsafe"name task', skills)
+    invocation = parse_skill_invocation("/review", skills)
 
     assert invocation is not None
-    formatted = format_skill_invocation(invocation, skills)
-    assert 'name="unsafe&quot;name"' in formatted
-    assert 'path="/skills/a&amp;b"' in formatted
+    assert format_skill_invocation(invocation, skills) == "Use this skill: review"
 
 
 def test_slash_command_completer_completes_multiple_skills() -> None:

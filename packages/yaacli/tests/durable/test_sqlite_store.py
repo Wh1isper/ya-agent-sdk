@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -416,7 +415,7 @@ def test_terminal_retention_prunes_complete_run_bundles(tmp_path: Path) -> None:
             assert count == 0, table
 
 
-def test_session_retention_tombstones_then_purges_on_next_open(tmp_path: Path) -> None:
+def test_session_retention_tombstones_then_purges_on_explicit_maintenance(tmp_path: Path) -> None:
     path = tmp_path / "session-retention.sqlite3"
     session_ids = ["session-a", "session-b", "session-c"]
     with SQLiteSessionStore(path, max_sessions=10) as store:
@@ -424,6 +423,7 @@ def test_session_retention_tombstones_then_purges_on_next_open(tmp_path: Path) -
             store.create_session("/workspace", session_id=session_id)
 
     with SQLiteSessionStore(path, max_sessions=2) as store:
+        assert store.run_maintenance().tombstoned_sessions == 1
         active_ids = {session.session_id for session in store.list_sessions(limit=10)}
         tombstoned_ids = {
             session_id
@@ -435,6 +435,7 @@ def test_session_retention_tombstones_then_purges_on_next_open(tmp_path: Path) -
         purged_id = tombstoned_ids.pop()
 
     with SQLiteSessionStore(path, max_sessions=2) as store:
+        assert store.run_maintenance().purged_sessions == 1
         assert store.get_session(purged_id) is None
         assert len(store.list_sessions(limit=10)) == 2
 
@@ -555,29 +556,27 @@ def test_offline_import_publishes_revision_with_model_metadata(tmp_path: Path) -
         assert run.model_profile_id == "test-profile"
 
 
-def test_schema_v5_store_is_destructively_recreated_at_same_path(tmp_path: Path) -> None:
+def test_schema_v5_store_is_rejected_without_runtime_reset(tmp_path: Path) -> None:
     database_path = tmp_path / "sessions-v2.sqlite3"
     legacy_schema = (Path(__file__).parents[1] / "fixtures" / "session_schema_v5.sql").read_text(encoding="utf-8")
-    with closing(sqlite3.connect(database_path)) as connection:
+    with sqlite3.connect(database_path) as connection:
         connection.executescript(legacy_schema)
         connection.execute(
             """
             INSERT INTO sessions(
                 session_id, workspace_ref, status, created_at, updated_at
-            ) VALUES('discard-me', '/workspace', 'active', ?, ?)
+            ) VALUES('preserve-me', '/workspace', 'active', ?, ?)
             """,
             (datetime.now(UTC).isoformat(), datetime.now(UTC).isoformat()),
         )
 
-    with SQLiteSessionStore(database_path) as store:
-        marker = store._connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
-        assert marker is not None and marker[0] == str(sqlite_store_module._SCHEMA_VERSION)
-        assert store.list_sessions() == ()
-        created = store.create_session("/workspace", session_id="new-session")
+    with pytest.raises(RuntimeError, match="exact durable product schema"):
+        SQLiteSessionStore(database_path)
 
-    assert database_path.exists()
-    with SQLiteSessionStore(database_path) as reopened:
-        assert reopened.get_session(created.session_id) == created
+    with sqlite3.connect(database_path) as connection:
+        marker = connection.execute("SELECT value FROM schema_metadata WHERE key = 'schema_version'").fetchone()
+        assert marker == ("5",)
+        assert connection.execute("SELECT session_id FROM sessions").fetchall() == [("preserve-me",)]
 
 
 def test_sqlite_schema_contains_only_revision_and_checkpoint_metadata(tmp_path: Path) -> None:
@@ -709,7 +708,7 @@ def test_orphan_cleanup_never_claims_unmarked_sibling_directories(tmp_path: Path
     empty_unrelated.mkdir()
 
     with SQLiteSessionStore(tmp_path / "sessions.sqlite3") as store:
-        with pytest.raises(RuntimeError, match="Refusing to claim unmarked"):
+        with pytest.raises(KeyError, match="empty-unrelated"):
             store.tombstone_session("empty-unrelated")
         store.run_maintenance()
 
