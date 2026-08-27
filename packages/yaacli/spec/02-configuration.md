@@ -135,7 +135,9 @@ prompt = "Please perform a comprehensive review of the current changes."
 The exact complete template is
 `packages/yaacli/yaacli/templates/config.toml`. User-authored configuration is strict:
 unknown, misspelled, and removed fields are rejected. Custom commands always use the
-same agent execution semantics and contain only `description` plus `prompt`.
+same agent execution semantics and contain only `description` plus `prompt`. At idle
+slash dispatch, an effective skill with the same name takes precedence over the custom
+command; reserved built-in commands remain authoritative.
 
 ### General and model profiles
 

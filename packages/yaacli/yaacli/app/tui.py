@@ -2050,6 +2050,14 @@ class TUIApp:
         if not self._pending_attachments:
             self._next_attachment_id = 1
 
+    def _detach_attachment_snapshot(self, attachments: Sequence[PendingAttachment]) -> None:
+        """Keep submitted binaries while detaching only their consumed placeholders."""
+        submitted = {id(item) for item in attachments}
+        self._pending_attachments = [
+            replace(item, placeholder="") if id(item) in submitted and item.placeholder else item
+            for item in self._pending_attachments
+        ]
+
     def _remove_pending_attachment(self, index: int | None = None) -> PendingAttachment | None:
         """Remove one queued attachment, defaulting to the most recent."""
         if not self._pending_attachments:
@@ -4453,12 +4461,21 @@ class TUIApp:
             return command_name == "/goal" and bool(args)
         return builtin_name in self.config.get_commands()
 
-    def _is_known_slash_command(self, command_name: str) -> bool:
-        """Return whether a slash-prefixed token belongs to the local control plane."""
+    def _is_builtin_slash_command(self, command_name: str) -> bool:
+        """Return whether a slash-prefixed token is a reserved built-in command."""
         if not command_name.startswith("/"):
             return False
-        name = command_name.removeprefix("/")
-        return name in BUILTIN_COMMANDS or name in self.config.get_commands()
+        return command_name.removeprefix("/") in BUILTIN_COMMANDS
+
+    def _is_custom_slash_command(self, command_name: str) -> bool:
+        """Return whether a slash-prefixed token is a configured prompt command."""
+        if not command_name.startswith("/"):
+            return False
+        return command_name.removeprefix("/") in self.config.get_commands()
+
+    def _is_known_slash_command(self, command_name: str) -> bool:
+        """Return whether a slash-prefixed token belongs to the local control plane."""
+        return self._is_builtin_slash_command(command_name) or self._is_custom_slash_command(command_name)
 
     def _route_busy_control_input(self, text: str, input_area: TextArea) -> bool:
         """Route recognized slash commands and shell syntax before ordinary input.
@@ -4536,15 +4553,32 @@ class TUIApp:
             task.add_done_callback(self._release_foreground_command)
         self._track_managed_task(task)
 
+    @staticmethod
+    def _consume_compose_snapshot(input_area: TextArea, compose_snapshot: str) -> bool:
+        """Remove one accepted submission without clearing text entered afterward."""
+        current = input_area.buffer.text
+        if not current.startswith(compose_snapshot):
+            return False
+        input_area.buffer.text = current[len(compose_snapshot) :].lstrip()
+        input_area.buffer.cursor_position = len(input_area.buffer.text)
+        return True
+
     def _schedule_skill_or_prompt(
         self,
         text: str,
         attachments: list[PendingAttachment],
         input_area: TextArea,
         compose_snapshot: str,
+        *,
+        starts_agent: bool = False,
     ) -> None:
         """Refresh skill discovery before classifying slash-prefixed user input."""
-        self._set_phase(TUIPhase.COMMAND_RUNNING)
+        if starts_agent:
+            self._run_started_at = time.monotonic()
+            self._run_timer_paused_at = None
+            self._set_phase(TUIPhase.THINKING)
+        else:
+            self._set_phase(TUIPhase.COMMAND_RUNNING)
         task = asyncio.create_task(self._handle_skill_or_prompt(text, attachments, input_area, compose_snapshot))
         self._foreground_command_task = task
         task.add_done_callback(self._release_foreground_command)
@@ -4569,8 +4603,17 @@ class TUIApp:
             skill_invocation = parse_skill_invocation(
                 text,
                 available_skills,
-                command_names=self._command_words(),
+                command_names=(f"/{name}" for name in BUILTIN_COMMANDS),
             )
+            command_name = text.split(maxsplit=1)[0].lower()
+            if skill_invocation is None and self._is_custom_slash_command(command_name):
+                await self._handle_command_inner(
+                    text,
+                    pending_input=input_area,
+                    compose_snapshot=compose_snapshot,
+                    attachment_snapshot=attachments,
+                )
+                return
             if skill_invocation is None:
                 launched = self._launch_agent(text, attachments)
             else:
@@ -4579,10 +4622,7 @@ class TUIApp:
             if launched:
                 self._consume_attachment_snapshot(attachments)
                 self._add_prompt_history(text)
-                current = input_area.buffer.text
-                if current.startswith(compose_snapshot):
-                    input_area.buffer.text = current[len(compose_snapshot) :].lstrip()
-                    input_area.buffer.cursor_position = len(input_area.buffer.text)
+                self._consume_compose_snapshot(input_area, compose_snapshot)
                 self._append_user_input(text, attachments)
         except Exception as error:
             logger.exception("Slash dispatch failed: %s", text)
@@ -4633,7 +4673,7 @@ class TUIApp:
 
         if semantic_text.startswith("/"):
             command_name = semantic_text.split(maxsplit=1)[0].lower()
-            if self._is_known_slash_command(command_name):
+            if self._is_builtin_slash_command(command_name):
                 if self._command_starts_agent(semantic_text):
                     self._schedule_command(semantic_text, pending_input=input_area)
                 else:
@@ -4642,14 +4682,16 @@ class TUIApp:
                     input_area.buffer.reset()
                     self._schedule_command(semantic_text)
             else:
-                # Skill directories can change while the TUI is running. Keep
-                # the draft and attachments until the resulting turn is durable.
+                # Skills take precedence over configured prompt commands. Skill
+                # directories can change while the TUI is running, so refresh
+                # before deciding whether this is a skill, command, or prompt.
                 attachments = list(self._pending_attachments)
                 self._schedule_skill_or_prompt(
                     semantic_text,
                     attachments,
                     input_area,
                     input_area.buffer.text,
+                    starts_agent=self._is_custom_slash_command(command_name),
                 )
             return
 
@@ -5103,9 +5145,11 @@ class TUIApp:
         return self._runtime.ctx.available_skills
 
     def _skill_words(self) -> list[str]:
-        """Return slash-safe names from the effective SDK skill catalog."""
+        """Return non-reserved slash-safe names from the effective skill catalog."""
         return [
-            f"/{name}" for name in sorted(self._available_skills()) if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
+            f"/{name}"
+            for name in sorted(self._available_skills())
+            if name.lower() not in BUILTIN_COMMANDS and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name)
         ]
 
     def _session_completion_ids(self) -> list[str]:
@@ -5331,7 +5375,14 @@ class TUIApp:
             if self._app:
                 self._app.invalidate()
 
-    async def _handle_command_inner(self, command: str, *, pending_input: TextArea | None = None) -> None:
+    async def _handle_command_inner(
+        self,
+        command: str,
+        *,
+        pending_input: TextArea | None = None,
+        compose_snapshot: str | None = None,
+        attachment_snapshot: Sequence[PendingAttachment] = (),
+    ) -> None:
         """Inner command dispatch (exceptions caught by _handle_command)."""
         parts = command.split(maxsplit=1)
         cmd = parts[0].lower()
@@ -5432,8 +5483,11 @@ class TUIApp:
                         self._launch_agent(prompt)
                     elif self._launch_agent(prompt):
                         self._add_prompt_history(command)
-                        self._detach_pending_attachment_placeholders()
-                        pending_input.buffer.reset()
+                        if compose_snapshot is None:
+                            self._detach_pending_attachment_placeholders()
+                            pending_input.buffer.reset()
+                        elif self._consume_compose_snapshot(pending_input, compose_snapshot):
+                            self._detach_attachment_snapshot(attachment_snapshot)
                         self._append_user_input(prompt)
                 else:
                     candidates = [name.removeprefix("/") for name in self._command_words()]

@@ -61,8 +61,9 @@ def parse_skill_invocation(
 ) -> SkillInvocation | None:
     """Parse consecutive ``/skill-name`` prefixes from the start of input.
 
-    Existing slash commands take precedence when the first token is both a
-    command and a skill. Unknown slash tokens are left in the remaining prompt.
+    Names supplied through ``command_names`` are reserved control commands and
+    take precedence when the first token is also a skill. Unknown slash tokens
+    are left in the remaining prompt.
     """
     commands = {name.removeprefix("/").lower() for name in command_names}
     names: list[str] = []
@@ -142,8 +143,8 @@ class SlashCommandCompleter(Completer):
         if " " not in text:
             seen: set[str] = set()
             for candidate, kind in [
-                *((command, "command") for command in commands),
                 *((skill, "skill") for skill in skills),
+                *((command, "command") for command in commands),
             ]:
                 if candidate in seen or not candidate.startswith(text):
                     continue
