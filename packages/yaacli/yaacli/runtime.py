@@ -662,7 +662,7 @@ def create_tui_runtime(
                 prefix = server.id if server_config is None or server_config.prefix is None else server_config.prefix
                 if prefix:
                     direct = direct.prefixed(prefix)
-                capabilities.append(NativeToolsetCapability(direct, id=f"mcp:{server.id}"))
+                capabilities.append(NativeToolsetCapability(direct, id=f"mcp-{server.id}"))
 
     capabilities.extend([
         ToolSupersessionCapability(),

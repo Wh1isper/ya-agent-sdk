@@ -651,7 +651,10 @@ def test_runtime_direct_and_proxy_mcp_assembly(tmp_path: Path) -> None:
         working_dir=tmp_path,
     )
 
-    assert direct.explicit_capabilities
+    direct_capability_ids = {capability.id for capability in direct.explicit_capabilities}
+
+    assert "mcp-docs" in direct_capability_ids
+    assert not any(capability_id and ":" in capability_id for capability_id in direct_capability_ids)
     assert proxy.explicit_capabilities
     assert direct is not proxy
 
