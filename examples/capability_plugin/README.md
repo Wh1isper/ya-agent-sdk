@@ -101,9 +101,7 @@ once and uses the same resolved snapshot for spec construction and runtime creat
 
 ```python
 plugins = load_capability_plugins(Path("plugins.toml"))
-spec = plugins.apply_to_root_agent_spec(
-    AgentSpec.from_dict({"name": "capability-plugin-example"})
-)
+spec = plugins.apply_to_root_agent_spec(AgentSpec.from_dict({"name": "capability-plugin-example"}))
 
 runtime = create_agent(
     model,

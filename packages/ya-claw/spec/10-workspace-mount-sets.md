@@ -22,6 +22,7 @@ The configured service workspace remains the bootstrap workspace for deployments
 from typing import Literal
 from pydantic import BaseModel, Field
 
+
 class WorkspaceMountSpec(BaseModel):
     id: str | None = None
     name: str | None = None
@@ -30,6 +31,7 @@ class WorkspaceMountSpec(BaseModel):
     mode: Literal["rw", "ro"] = "rw"
     docker_host_path: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+
 
 class WorkspaceBindingSpec(BaseModel):
     mounts: list[WorkspaceMountSpec]
@@ -153,6 +155,7 @@ class WorkspaceMountBinding:
     docker_host_path: Path | None = None
     name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass(slots=True)
 class WorkspaceBinding:

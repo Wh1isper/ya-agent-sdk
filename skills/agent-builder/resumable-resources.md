@@ -79,6 +79,7 @@ For resources that don't need state persistence, just implement `close()`:
 class DatabasePool(BaseResource):
     async def close(self) -> None:
         await self._pool.close()
+
     # export_state/restore_state use defaults (empty dict / no-op)
 ```
 
@@ -165,10 +166,12 @@ Factory functions receive the `Environment` instance:
 ```python
 from ya_agent_environment import Environment
 
+
 async def create_api_client(env: Environment) -> ApiClientSession:
     return ApiClientSession(
         client=ApiClient(cache_dir=env.tmp_dir),
     )
+
 
 async with LocalEnvironment() as env:
     env.resources.register_factory("api_client", create_api_client)
@@ -195,9 +198,7 @@ async with LocalEnvironment(
 ### Chaining API
 
 ```python
-env = (LocalEnvironment()
-    .with_resource_factory("api_client", create_api_client)
-    .with_resource_state(state))
+env = LocalEnvironment().with_resource_factory("api_client", create_api_client).with_resource_state(state)
 ```
 
 ## ResourceRegistry API

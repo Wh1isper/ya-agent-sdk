@@ -14,13 +14,16 @@ from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.capabilities import ToolProxyCapability
 
+
 async def get_weather(location: str) -> str:
     """Get current weather for a location."""
     ...
 
+
 async def get_forecast(location: str, days: int = 5) -> str:
     """Get a multi-day weather forecast."""
     ...
+
 
 weather = FunctionToolset(
     [get_weather, get_forecast],

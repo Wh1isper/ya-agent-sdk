@@ -308,10 +308,12 @@ Factory functions receive the `Environment` instance, allowing access to `file_o
 ```python
 from ya_agent_environment import Environment
 
+
 async def create_api_client(env: Environment) -> ApiClientSession:
     return ApiClientSession(
         client=ApiClient(cache_dir=env.tmp_dir),
     )
+
 
 # First run: create and export
 async with LocalEnvironment() as env:
@@ -333,9 +335,7 @@ async with LocalEnvironment(
 ### Chaining API
 
 ```python
-env = (LocalEnvironment()
-    .with_resource_factory("api_client", create_api_client)
-    .with_resource_state(state))
+env = LocalEnvironment().with_resource_factory("api_client", create_api_client).with_resource_state(state)
 ```
 
 > Non-resumable resources (without `export_state`/`restore_state`) are silently skipped during export.

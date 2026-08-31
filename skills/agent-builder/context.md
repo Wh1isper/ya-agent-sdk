@@ -117,12 +117,8 @@ Path("state.json").write_text(
 )
 
 # Before the next run:
-messages = ModelMessagesTypeAdapter.validate_json(
-    Path("messages.json").read_bytes()
-)
-state = ResumableState.model_validate_json(
-    Path("state.json").read_text(encoding="utf-8")
-)
+messages = ModelMessagesTypeAdapter.validate_json(Path("messages.json").read_bytes())
+state = ResumableState.model_validate_json(Path("state.json").read_text(encoding="utf-8"))
 runtime = create_agent("openai-chat:gpt-4o", state=state)
 result = await runtime.agent.run(
     "Continue",
@@ -210,6 +206,7 @@ from pydantic_ai.models import Model
 
 def wrap_model(model: Model, agent_name: str, metadata: dict[str, object]) -> Model:
     return traced(model, name=agent_name, run_id=metadata.get("run_id"))
+
 
 runtime = create_agent(
     "openai-chat:gpt-4o",

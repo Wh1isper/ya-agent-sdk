@@ -49,6 +49,7 @@ def add(a: int, b: int) -> int:
     """Add two integers."""
     return a + b
 
+
 runtime = create_agent(
     "openai-chat:gpt-4o",
     capabilities=[Capability(tools=[add], id="math")],

@@ -31,8 +31,7 @@ class SearchTool(BaseTool):
     description = "Search indexed records."
     codeact = True
 
-    async def call(self, ctx, *, query: str) -> list[dict[str, object]]:
-        ...
+    async def call(self, ctx, *, query: str) -> list[dict[str, object]]: ...
 ```
 
 External Pydantic AI toolsets attach the same metadata:
@@ -67,10 +66,9 @@ A program is a strict UTF-8 `*.codeact.py` file with this entrypoint:
 ```python
 import asyncio
 
+
 async def main(inputs):
-    results = await asyncio.gather(
-        *(search(query=query) for query in inputs["queries"])
-    )
+    results = await asyncio.gather(*(search(query=query) for query in inputs["queries"]))
     return results
 ```
 
