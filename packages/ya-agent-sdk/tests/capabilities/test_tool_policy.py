@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import cast
@@ -76,7 +76,7 @@ async def test_tool_timeout_is_a_ceiling_and_preserves_shorter_tool_deadlines(
     observed_timeouts: list[float | None] = []
 
     @asynccontextmanager
-    async def capture_timeout(delay: float | None) -> AsyncIterator[None]:
+    async def capture_timeout(delay: float | None) -> AsyncGenerator[None, None]:
         observed_timeouts.append(delay)
         yield
 

@@ -12,8 +12,10 @@ import yaml
 from pydantic import BaseModel, ConfigDict, field_validator
 from pydantic_ai import AgentSpec
 from ya_agent_sdk.context import ModelConfig
-from ya_agent_sdk.presets import resolve_model_cfg, resolve_model_settings
+from ya_agent_sdk.presets import resolve_model_settings
 from ya_agent_sdk.subagents import SubagentExecutionMode, SubagentSpec
+
+from yaacli.model_profiles import resolve_profile_model_cfg
 
 YAACLI_MODEL_CFG_METADATA_KEY = "yaacli_model_cfg"
 YAACLI_INHERIT_MODEL_SETTINGS_METADATA_KEY = "yaacli_inherit_model_settings"
@@ -122,7 +124,7 @@ def model_cfg_from_agent_spec(spec: AgentSpec) -> ModelConfig | None:
         return None
     if not isinstance(value, dict):
         raise TypeError(f"AgentSpec metadata {YAACLI_MODEL_CFG_METADATA_KEY!r} must be a mapping")
-    return ModelConfig.model_validate(value)
+    return resolve_profile_model_cfg(value)
 
 
 def materialize_subagent_model_configuration(
@@ -198,11 +200,12 @@ def _markdown_to_subagent_spec(
 
     metadata: dict[str, Any] = {}
     inherit_model_cfg = frontmatter.model_cfg in (None, "inherit")
-    model_cfg = None if inherit_model_cfg else resolve_model_cfg(frontmatter.model_cfg)
     if inherit_model_cfg:
         metadata[YAACLI_INHERIT_MODEL_CFG_METADATA_KEY] = True
-    elif model_cfg is not None:
-        metadata[YAACLI_MODEL_CFG_METADATA_KEY] = ModelConfig.model_validate(model_cfg).model_dump(mode="json")
+    else:
+        metadata[YAACLI_MODEL_CFG_METADATA_KEY] = resolve_profile_model_cfg(frontmatter.model_cfg).model_dump(
+            mode="json"
+        )
 
     model = None if frontmatter.model in (None, "inherit") else frontmatter.model
     inherit_model_settings = frontmatter.model_settings in (None, "inherit")

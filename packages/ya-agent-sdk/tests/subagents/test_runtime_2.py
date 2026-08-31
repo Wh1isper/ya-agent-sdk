@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import pytest
+import websockets
 from pydantic import TypeAdapter
 from pydantic_ai import (
     Agent,
@@ -19,18 +20,27 @@ from pydantic_ai import (
 from pydantic_ai._spec import CapabilitySpec
 from pydantic_ai.agent.spec import load_capability_from_nested_spec
 from pydantic_ai.capabilities import AbstractCapability, CombinedCapability, PrefixTools, WrapperCapability
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
+from ya_agent_sdk.agents.retry_recovery import DEFAULT_STREAM_RESUME_PROMPT
 from ya_agent_sdk.capabilities import (
     SupportsDeferredOutput,
     ToolApprovalCapability,
     build_capability_catalog,
     build_default_capability_catalog,
 )
-from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.context import AgentContext, ModelConfig, StreamRecoveryPolicy
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -810,6 +820,97 @@ async def test_initial_input_stays_applied_when_model_fails_after_graph_admissio
     assert record.state is SubagentExecutionState.failed
     assert record.input_state is SubagentInputState.applied
     assert record.error == "model request failed"
+
+
+async def test_in_process_subagent_retries_transient_model_transport_failure() -> None:
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(catalog).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    calls: list[list[ModelMessage]] = []
+
+    async def fail_once(
+        messages: list[ModelMessage],
+        _info: FunctionAgentInfo,
+    ):
+        calls.append(list(messages))
+        if len(calls) == 1:
+            raise websockets.WebSocketException("application websocket code 1101: connection timed out")
+        yield "recovered"
+
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        InMemorySubagentExecutionStore(),
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: FunctionModel(stream_function=fail_once),
+        ),
+    )
+    parent = AgentContext(
+        delegation_scope_id="session",
+        model_cfg=ModelConfig(
+            stream_resume_on_error=False,
+            stream_transport_resume_max_attempts=1,
+        ),
+        stream_recovery_policy=StreamRecoveryPolicy(
+            enabled=True,
+            max_attempts=1,
+            transport_max_attempts=2,
+            resume_prompt=DEFAULT_STREAM_RESUME_PROMPT,
+        ),
+    )
+
+    handle = await service.spawn("worker", "recover transport", parent)
+    record = await service.wait(handle.execution_id, caller_scope_id="session")
+    await service.close()
+
+    assert record.state is SubagentExecutionState.succeeded
+    assert record.output == "recovered"
+    assert record.usage["requests"] == 2
+    assert len(calls) == 2
+    resume_request = calls[1][-1]
+    assert isinstance(resume_request, ModelRequest)
+    assert any(
+        isinstance(part, UserPromptPart) and part.content == DEFAULT_STREAM_RESUME_PROMPT
+        for part in resume_request.parts
+    )
+
+
+async def test_in_process_subagent_preserves_explicitly_disabled_stream_recovery() -> None:
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(catalog).resolve(SubagentSpec(route="worker", agent=AgentSpec(model="test")))
+    calls = 0
+
+    async def always_fail(
+        _messages: list[ModelMessage],
+        _info: FunctionAgentInfo,
+    ):
+        nonlocal calls
+        calls += 1
+        raise websockets.WebSocketException("application websocket code 1101: connection timed out")
+        yield "unreachable"  # pragma: no cover
+
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        InMemorySubagentExecutionStore(),
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: FunctionModel(stream_function=always_fail),
+        ),
+    )
+    parent = AgentContext(
+        delegation_scope_id="session",
+        model_cfg=ModelConfig(
+            stream_resume_on_error=False,
+            stream_transport_resume_max_attempts=20,
+        ),
+    )
+
+    handle = await service.spawn("worker", "do not retry", parent)
+    record = await service.wait(handle.execution_id, caller_scope_id="session")
+    await service.close()
+
+    assert record.state is SubagentExecutionState.failed
+    assert record.error == "application websocket code 1101: connection timed out"
+    assert calls == 1
 
 
 async def test_initial_input_stays_applied_when_cancelled_after_graph_admission() -> None:

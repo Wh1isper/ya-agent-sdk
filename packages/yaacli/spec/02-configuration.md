@@ -152,6 +152,15 @@ active main-agent profile. YAACLI registers them through a dynamic Pydantic AI
 request, including restored or compacted histories. A `/model` switch therefore takes
 effect without rebuilding prior history.
 
+YAACLI defaults `stream_resume_on_error` to `true` when resolving every root and
+subagent profile. Root agents, named subagents, and self forks use the same SDK recovery
+controller while each child retains independent history, usage, and retry budgets. The
+SDK defaults provide three total attempts for non-transport execution failures and an
+independent 20-attempt budget for each consecutive transient model HTTP/WebSocket
+failure streak. A successful model request resets the transport streak. Explicit inline
+root or child `model_cfg` values, including `stream_resume_on_error = false`, remain
+authoritative.
+
 `general.max_requests` bounds cumulative model requests within one durable logical run,
 including every native deferred-tool continuation segment. A later user turn starts a
 new logical run and receives a fresh budget.

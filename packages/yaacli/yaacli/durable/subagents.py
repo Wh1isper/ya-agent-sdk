@@ -21,9 +21,11 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_graph import End
+from ya_agent_sdk.agents.retry_recovery import DEFAULT_STREAM_RESUME_PROMPT
 from ya_agent_sdk.context import (
     AgentContext,
     ModelConfig,
+    StreamRecoveryPolicy,
 )
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -318,6 +320,17 @@ class LocalSubagentDriver:
         child_model_cfg = model_cfg_from_agent_spec(plan.normalized_agent_spec)
         child_ctx.model_cfg = (
             child_model_cfg if child_model_cfg is not None else self.default_model_cfg.model_copy(deep=True)
+        )
+        inherited_policy = child_ctx.stream_recovery_policy
+        child_ctx.stream_recovery_policy = StreamRecoveryPolicy(
+            enabled=child_ctx.model_cfg.stream_resume_on_error,
+            max_attempts=child_ctx.model_cfg.stream_resume_max_attempts,
+            transport_max_attempts=child_ctx.model_cfg.stream_transport_resume_max_attempts,
+            resume_prompt=(
+                child_ctx.model_cfg.stream_resume_prompt
+                or (inherited_policy.resume_prompt if inherited_policy is not None else DEFAULT_STREAM_RESUME_PROMPT)
+            ),
+            resume_prompt_factory=(inherited_policy.resume_prompt_factory if inherited_policy is not None else None),
         )
         child_ctx.parent_run_id = record.parent_logical_run_id
         child_ctx.provider_session_id = record.execution_id

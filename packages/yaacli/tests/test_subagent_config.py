@@ -14,6 +14,7 @@ from yaacli.subagent_config import (
     has_subagent_definition,
     load_subagent_specs,
     materialize_subagent_model_configuration,
+    model_cfg_from_agent_spec,
 )
 
 
@@ -145,9 +146,12 @@ def test_markdown_resolves_model_configuration_and_tool_visibility(tmp_path: Pat
     assert spec.agent.model == "openai-chat:gpt-4o"
     assert spec.agent.model_settings == {"temperature": 0.25}
     assert spec.agent.metadata is not None
-    model_cfg = spec.agent.metadata["yaacli_model_cfg"]
-    assert isinstance(model_cfg, dict)
-    assert model_cfg["context_window"] == 100_000
+    model_cfg = model_cfg_from_agent_spec(spec.agent)
+    assert model_cfg is not None
+    assert model_cfg.context_window == 100_000
+    assert model_cfg.stream_resume_on_error is True
+    assert model_cfg.stream_resume_max_attempts == 3
+    assert model_cfg.stream_transport_resume_max_attempts == 20
     visibility = next(item for item in spec.agent.capabilities if item.name == "ToolVisibilityCapability")
     assert visibility.arguments == {"allow": ["view", "grep", "glob"]}
     plan = SubagentPlanResolver(
@@ -155,6 +159,18 @@ def test_markdown_resolves_model_configuration_and_tool_visibility(tmp_path: Pat
         default_model="test",
     ).resolve(spec)
     assert plan.spec.route == "helper"
+
+
+def test_markdown_preserves_explicitly_disabled_child_stream_recovery(tmp_path: Path) -> None:
+    (tmp_path / "helper.md").write_text(
+        _markdown(extra_frontmatter=("model_cfg:\n  context_window: 100000\n  stream_resume_on_error: false\n")),
+        encoding="utf-8",
+    )
+
+    model_cfg = model_cfg_from_agent_spec(_load_specs(tmp_path)["helper"].agent)
+
+    assert model_cfg is not None
+    assert model_cfg.stream_resume_on_error is False
 
 
 def test_markdown_ignores_same_basename_native_capability_snapshot(tmp_path: Path) -> None:

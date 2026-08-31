@@ -152,13 +152,9 @@ def format_model_profile_label(profile: ResolvedModelProfile) -> str:
 
 
 def resolve_profile_model_cfg(model_cfg_input: str | dict[str, Any] | None) -> ModelConfig:
-    """Resolve a profile model_cfg into ModelConfig."""
-    if model_cfg_input is None:
-        return ModelConfig()
-
-    cfg_dict = resolve_model_cfg(model_cfg_input)
-    if cfg_dict is None:
-        return ModelConfig()
+    """Resolve a profile model_cfg with YAACLI's default stream recovery policy."""
+    cfg_dict = resolve_model_cfg(model_cfg_input) or {}
+    cfg_dict.setdefault("stream_resume_on_error", True)
 
     if "capabilities" in cfg_dict:
         caps = cfg_dict["capabilities"]

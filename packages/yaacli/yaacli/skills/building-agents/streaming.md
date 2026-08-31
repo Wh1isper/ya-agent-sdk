@@ -366,6 +366,8 @@ Retry recovery performs durable message-history cleanup before the next attempt:
 
 - OpenAI Responses item/reference errors drop server-side response IDs, encrypted reasoning artifacts, and stale item IDs while keeping text and tool-call semantics.
 - Context overflow errors force cold-start-style tool return trimming and replace image/video media with system reminders.
+- Incomplete ordinary tool calls are closed with one fixed, bounded unknown-state result. Exception text is diagnostic data and is never copied into model message history.
+- WebSocket application error codes remain transport failures rather than being interpreted as HTTP statuses, so transient timeout codes such as `1101` reach the transport resume budget.
 
 Note: `on_runtime_exit` is always called, even when exceptions occur, making it
 ideal for cleanup operations. The `exception` field in `RuntimeExitContext`

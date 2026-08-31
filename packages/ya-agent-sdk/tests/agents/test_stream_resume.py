@@ -45,13 +45,13 @@ def test_completed_native_tool_pair_is_not_treated_as_unreturned() -> None:
     ]
 
     assert history_has_unreturned_tool_calls(history) is False
-    assert close_unreturned_tool_calls(history, "stream failed") == history
+    assert close_unreturned_tool_calls(history) == history
 
 
 def test_incomplete_ordinary_tool_call_gets_neutral_unknown_effect_result() -> None:
     history = [ModelResponse(parts=[ToolCallPart(tool_name="computer_click", args={}, tool_call_id="click-1")])]
 
-    recovered = close_unreturned_tool_calls(history, "tool retries exhausted")
+    recovered = close_unreturned_tool_calls(history)
 
     assert len(recovered) == 2
     request = recovered[-1]
@@ -59,11 +59,10 @@ def test_incomplete_ordinary_tool_call_gets_neutral_unknown_effect_result() -> N
     returned = request.parts[0]
     assert isinstance(returned, ToolReturnPart)
     assert returned.outcome == "failed"
-    assert "did not produce a terminal result" in returned.content
-    assert "Completion and side-effect status are unknown" in returned.content
-    assert "verify idempotency and external state before retrying" in returned.content
-    assert "agent_error=tool retries exhausted" in returned.content
-    assert "stream error" not in returned.content
+    assert returned.content == (
+        "The previous agent attempt ended before this tool produced a terminal result. "
+        "Completion and side-effect status are unknown; verify current state before continuing."
+    )
 
 
 def test_incomplete_native_tool_call_is_removed_without_ordinary_return() -> None:
@@ -76,7 +75,7 @@ def test_incomplete_native_tool_call_is_removed_without_ordinary_return() -> Non
         )
     ]
 
-    recovered = close_unreturned_tool_calls(history, "stream failed")
+    recovered = close_unreturned_tool_calls(history)
 
     assert history_has_unreturned_tool_calls(history) is True
     assert len(recovered) == 1
@@ -578,7 +577,10 @@ async def test_stream_agent_closes_unreturned_tool_calls_before_resume(tmp_path:
     assert tool_returns[0].tool_name == "shell_exec"
     assert tool_returns[0].tool_call_id == "call-1"
     assert tool_returns[0].outcome == "failed"
-    assert "new user prompt requested before tool results" in str(tool_returns[0].content)
+    assert tool_returns[0].content == (
+        "The previous agent attempt ended before this tool produced a terminal result. "
+        "Completion and side-effect status are unknown; verify current state before continuing."
+    )
     resume_request = resume_messages[-1]
     assert isinstance(resume_request, ModelRequest)
     assert any(isinstance(part, UserPromptPart) for part in resume_request.parts)
