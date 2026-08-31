@@ -11,7 +11,7 @@ import contextvars
 import inspect
 import sys
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,9 +60,9 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
-from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
+    StreamRetryController,
     close_unreturned_tool_calls,
     extract_resume_history,
     history_has_unreturned_tool_calls,
@@ -1078,7 +1078,7 @@ async def stream_agent(  # noqa: C901
     resume_prompt_factory: ResumePromptFactory | None = None,
     # Lifecycle events
     emit_lifecycle_events: bool = True,
-) -> AsyncIterator[AgentStreamer[AgentDepsT, OutputT]]:
+) -> AsyncGenerator[AgentStreamer[AgentDepsT, OutputT], None]:
     """Stream agent execution with subagent event aggregation.
 
     This context manager runs the agent and yields a streamer that merges
@@ -1527,7 +1527,7 @@ async def stream_agent(  # noqa: C901
     ) -> tuple[Sequence[ModelMessage] | None, UserPromptT | None]:
         if prompt is None or not history or not history_has_unreturned_tool_calls(history):
             return history, prompt
-        return close_unreturned_tool_calls(history, "new user prompt requested before tool results"), prompt
+        return close_unreturned_tool_calls(history), prompt
 
     async def resolve_resume_prompt(
         exc: BaseException,
@@ -1576,11 +1576,8 @@ async def stream_agent(  # noqa: C901
         nonlocal attempt_failed_during_model_request
 
         recovery_policy = configure_stream_recovery_policy()
-        max_attempts = recovery_policy.max_attempts if recovery_policy.enabled else 1
-        transport_max_attempts = recovery_policy.transport_max_attempts if recovery_policy.enabled else 1
+        retry_controller = StreamRetryController(recovery_policy)
         attempt_index = 0
-        non_transport_failures = 0
-        transport_failures = 0
         current_user_prompt = effective_user_prompt
         current_deferred_tool_results = effective_deferred_tool_results
         current_message_history: Sequence[ModelMessage] | None = message_history
@@ -1603,39 +1600,26 @@ async def stream_agent(  # noqa: C901
                 )
                 return
             except Exception as e:
-                if successful_model_request_count > successful_model_requests_before_attempt and transport_failures:
-                    logger.debug(
-                        "Resetting transport failure streak after a successful model request previous_failures=%s",
-                        transport_failures,
-                    )
-                    transport_failures = 0
-                is_transport_failure = attempt_failed_during_model_request and is_retryable_model_stream_exception(e)
-                if is_transport_failure:
-                    transport_failures += 1
-                    recoverable = transport_failures + 1 <= transport_max_attempts
-                    recovery_budget = "transport"
-                    failures_in_budget = transport_failures
-                    active_max_attempts = transport_max_attempts
-                else:
-                    non_transport_failures += 1
-                    recoverable = non_transport_failures + 1 <= max_attempts
-                    recovery_budget = "execution"
-                    failures_in_budget = non_transport_failures
-                    active_max_attempts = max_attempts
+                decision = retry_controller.record_failure(
+                    e,
+                    failed_during_model_request=attempt_failed_during_model_request,
+                    successful_model_request=(
+                        successful_model_request_count > successful_model_requests_before_attempt
+                    ),
+                )
 
                 error_str = await emit_execution_failed_event(
                     e,
                     stream_start_time,
                     attempt_index=attempt_index,
-                    recoverable=recoverable,
+                    recoverable=decision.recoverable,
                 )
-                if not recoverable:
+                if not decision.recoverable:
                     raise
 
                 next_attempt_index = attempt_index + 1
                 resume_history = close_unreturned_tool_calls(
-                    extract_resume_history(streamer.run, current_message_history),
-                    error_str,
+                    extract_resume_history(streamer.run, current_message_history)
                 )
                 recovery = recover_retry_message_history(e, resume_history, ctx)
                 resume_history = recovery.history
@@ -1668,9 +1652,9 @@ async def stream_agent(  # noqa: C901
                     "recovery_budget=%s failures_in_budget=%s max_attempts=%s error_type=%s error=%s",
                     attempt_index,
                     next_attempt_index,
-                    recovery_budget,
-                    failures_in_budget,
-                    active_max_attempts,
+                    decision.budget,
+                    decision.failures_in_budget,
+                    decision.max_attempts,
                     type(e).__name__,
                     error_str,
                 )

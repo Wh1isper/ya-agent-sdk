@@ -358,6 +358,9 @@ Return a bounded result.
     assert helper.normalized_agent_spec.model_settings == {"temperature": 0.4, "max_tokens": 4096}
     assert helper.normalized_agent_spec.metadata is not None
     assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 100_000
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_resume_on_error"] is True
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_resume_max_attempts"] == 3
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_transport_resume_max_attempts"] == 20
     assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
     assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
 
@@ -401,6 +404,9 @@ Return a bounded result.
     assert helper.normalized_agent_spec.model_settings == {"temperature": 0.1}
     assert helper.normalized_agent_spec.metadata is not None
     assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["context_window"] == 300_000
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_resume_on_error"] is True
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_resume_max_attempts"] == 3
+    assert helper.normalized_agent_spec.metadata["yaacli_model_cfg"]["stream_transport_resume_max_attempts"] == 20
     assert "yaacli_inherit_model_settings" not in helper.normalized_agent_spec.metadata
     assert "yaacli_inherit_model_cfg" not in helper.normalized_agent_spec.metadata
 
@@ -571,6 +577,9 @@ def test_native_subagent_model_cfg_override_is_explicit(
     child_model_cfg = model_cfg_from_agent_spec(specs[0].agent)
     assert child_model_cfg is not None
     assert child_model_cfg.context_window == 1_000_000
+    assert child_model_cfg.stream_resume_on_error is True
+    assert child_model_cfg.stream_resume_max_attempts == 3
+    assert child_model_cfg.stream_transport_resume_max_attempts == 20
 
 
 def test_self_fork_native_grants_compose_with_host_policy_capabilities() -> None:

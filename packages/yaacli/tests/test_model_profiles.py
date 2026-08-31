@@ -10,6 +10,7 @@ from yaacli.model_profiles import (
     build_model_profiles,
     get_startup_model_profile,
     load_state,
+    resolve_profile_model_cfg,
     save_selected_model_profile_id,
 )
 
@@ -87,6 +88,34 @@ def test_startup_profile_falls_back_to_default_for_stale_selection(tmp_path: Pat
     assert profile is not None
     assert profile.id == DEFAULT_MODEL_PROFILE_ID
     assert profile.model == "anthropic:claude-sonnet-4-5"
+
+
+def test_profile_model_cfg_enables_stream_recovery_by_default() -> None:
+    model_cfg = resolve_profile_model_cfg(None)
+
+    assert model_cfg.stream_resume_on_error is True
+    assert model_cfg.stream_resume_max_attempts == 3
+    assert model_cfg.stream_transport_resume_max_attempts == 20
+    assert model_cfg.stream_transport_resume_max_attempts > model_cfg.stream_resume_max_attempts
+
+
+def test_profile_model_cfg_enables_stream_recovery_for_presets() -> None:
+    model_cfg = resolve_profile_model_cfg("gpt5_270k")
+
+    assert model_cfg.context_window == 270_000
+    assert model_cfg.stream_resume_on_error is True
+
+
+def test_profile_model_cfg_preserves_explicitly_disabled_stream_recovery() -> None:
+    model_cfg = resolve_profile_model_cfg({
+        "context_window": 123_000,
+        "stream_resume_on_error": False,
+        "stream_transport_resume_max_attempts": 7,
+    })
+
+    assert model_cfg.context_window == 123_000
+    assert model_cfg.stream_resume_on_error is False
+    assert model_cfg.stream_transport_resume_max_attempts == 7
 
 
 def test_websocket_responses_provider_uses_openai_response_presets() -> None:

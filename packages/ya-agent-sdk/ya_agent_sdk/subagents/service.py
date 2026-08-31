@@ -8,6 +8,7 @@ import json
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast, runtime_checkable
 from uuid import uuid4
@@ -31,9 +32,18 @@ from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 
+from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.models import infer_model
-from ya_agent_sdk.context import AgentContext, ResumableState, ToolProxyState
+from ya_agent_sdk.agents.retry_recovery import (
+    DEFAULT_STREAM_RESUME_PROMPT,
+    StreamRetryController,
+    close_unreturned_tool_calls,
+    extract_resume_history,
+    history_has_unreturned_tool_calls,
+    recover_retry_message_history,
+)
+from ya_agent_sdk.context import AgentContext, ResumableState, StreamRecoveryPolicy, ToolProxyState
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -59,6 +69,8 @@ from ya_agent_sdk.subagents.spec import (
 
 _DEFERRED_REQUESTS = TypeAdapter(DeferredToolRequests)
 _DEFERRED_RESULTS = TypeAdapter(DeferredToolResults)
+
+logger = get_logger(__name__)
 
 
 class SubagentRegistry:
@@ -570,7 +582,7 @@ class InProcessSubagentDriver:
             )
         return UsageLimits(request_limit=remaining_requests)
 
-    async def run(
+    async def run(  # noqa: C901
         self,
         plan: ResolvedSubagentPlan,
         record: SubagentExecutionRecord,
@@ -607,7 +619,7 @@ class InProcessSubagentDriver:
         deferred_results = (
             _DEFERRED_RESULTS.validate_python(record.deferred_results) if record.deferred_results is not None else None
         )
-        current_prompt: str | list[UserContent] | None = None if deferred_results is not None else record.prompt
+        current_prompt: str | Sequence[UserContent] | None = None if deferred_results is not None else record.prompt
         usage_limits = self._usage_limits(record)
         agent = Agent.from_spec(
             plan.normalized_agent_spec,
@@ -623,6 +635,23 @@ class InProcessSubagentDriver:
         run = None
         deferred_suspension = False
         input_applied = record.input_state is SubagentInputState.applied
+        inherited_policy = child_ctx.stream_recovery_policy
+        recovery_policy = (
+            inherited_policy.model_copy(deep=True)
+            if inherited_policy is not None
+            else StreamRecoveryPolicy(
+                enabled=child_ctx.model_cfg.stream_resume_on_error,
+                max_attempts=child_ctx.model_cfg.stream_resume_max_attempts,
+                transport_max_attempts=child_ctx.model_cfg.stream_transport_resume_max_attempts,
+                resume_prompt=child_ctx.model_cfg.stream_resume_prompt or DEFAULT_STREAM_RESUME_PROMPT,
+            )
+        )
+        child_ctx.stream_recovery_policy = recovery_policy
+        retry_controller = StreamRetryController(recovery_policy)
+        segment_usage = RunUsage()
+        attempt_index = 0
+        current_history = history
+        current_deferred_results = deferred_results
         try:
             async with child_ctx, agent:
                 if deferred_results is None:
@@ -632,28 +661,87 @@ class InProcessSubagentDriver:
                     )
                     input_applied = True
                     record.input_state = SubagentInputState.applied
-                async with agent.iter(
-                    current_prompt,
-                    deps=child_ctx,
-                    message_history=history,
-                    deferred_tool_results=deferred_results,
-                    usage_limits=usage_limits,
-                    run_id=(f"{record.child_logical_run_id}:{record.segment_index}"),
-                ) as run:
-                    attempt_id = str(uuid4())
-                    await router.bind(run, native_attempt_id=attempt_id)
+                while True:
+                    telemetry = _SubagentStreamAttemptTelemetry()
+                    attempt_history = current_history
+                    if (
+                        current_prompt is not None
+                        and attempt_history
+                        and history_has_unreturned_tool_calls(attempt_history)
+                    ):
+                        attempt_history = close_unreturned_tool_calls(attempt_history)
                     try:
-                        await drive_streamed_run(
-                            run,
-                            lambda node, current_run: _stream_child_node(
-                                node,
-                                current_run,
-                                child_ctx,
-                                router,
-                            ),
+                        async with agent.iter(
+                            current_prompt,
+                            deps=child_ctx,
+                            message_history=attempt_history,
+                            deferred_tool_results=current_deferred_results,
+                            usage_limits=usage_limits,
+                            usage=segment_usage,
+                            run_id=(f"{record.child_logical_run_id}:{record.segment_index}:{attempt_index}"),
+                        ) as run:
+                            attempt_id = str(uuid4())
+                            await router.bind(run, native_attempt_id=attempt_id)
+                            try:
+                                await drive_streamed_run(
+                                    run,
+                                    lambda node, current_run, attempt_telemetry=telemetry: _stream_child_node(
+                                        node,
+                                        current_run,
+                                        child_ctx,
+                                        router,
+                                        attempt_telemetry,
+                                    ),
+                                )
+                            finally:
+                                router.unbind(native_attempt_id=attempt_id)
+                        break
+                    except Exception as exc:
+                        decision = retry_controller.record_failure(
+                            exc,
+                            failed_during_model_request=telemetry.failed_during_model_request,
+                            successful_model_request=telemetry.successful_model_requests > 0,
                         )
-                    finally:
-                        router.unbind(native_attempt_id=attempt_id)
+                        if not decision.recoverable:
+                            raise
+
+                        resume_history = close_unreturned_tool_calls(extract_resume_history(run, current_history))
+                        recovery = recover_retry_message_history(exc, resume_history, child_ctx)
+                        resume_history = recovery.history
+                        if recovery.changed:
+                            logger.info(
+                                "Applied subagent retry recovery route=%s execution_id=%s attempt=%s reasons=%s",
+                                plan.spec.route,
+                                record.execution_id,
+                                attempt_index + 1,
+                                ",".join(recovery.reasons),
+                            )
+                        if resume_history:
+                            resume_prompt = recovery_policy.resume_prompt
+                            if recovery_policy.resume_prompt_factory is not None:
+                                resume_prompt = recovery_policy.resume_prompt_factory(
+                                    exc,
+                                    attempt_index + 1,
+                                    resume_history,
+                                )
+                                if inspect.isawaitable(resume_prompt):
+                                    resume_prompt = await resume_prompt
+                            current_prompt = resume_prompt
+                            current_history = resume_history
+                        current_deferred_results = None
+                        attempt_index += 1
+                        logger.warning(
+                            "Resuming subagent after error route=%s execution_id=%s attempt_index=%s "
+                            "recovery_budget=%s failures_in_budget=%s max_attempts=%s error_type=%s error=%s",
+                            plan.spec.route,
+                            record.execution_id,
+                            attempt_index,
+                            decision.budget,
+                            decision.failures_in_budget,
+                            decision.max_attempts,
+                            type(exc).__name__,
+                            str(exc) or repr(exc),
+                        )
 
                 result = run.result
                 if result is None:  # pragma: no cover - native graph invariant
@@ -664,7 +752,7 @@ class InProcessSubagentDriver:
                         mode="json",
                     )
                 )
-                usage = to_jsonable_python(_combine_usage(record.usage, result.usage))
+                usage = to_jsonable_python(_combine_usage(record.usage, segment_usage))
                 if isinstance(result.output, DeferredToolRequests):
                     deferred_suspension = True
                     return SubagentDriverOutcome(
@@ -704,20 +792,41 @@ class InProcessSubagentDriver:
             child_ctx.input_router = None
 
 
+@dataclass(slots=True)
+class _SubagentStreamAttemptTelemetry:
+    failed_during_model_request: bool = False
+    successful_model_requests: int = 0
+
+
 async def _stream_child_node(
     node: Any,
     run: Any,
     child_ctx: AgentContext,
     router: LogicalRunInputRouter,
+    telemetry: _SubagentStreamAttemptTelemetry,
 ) -> None:
     if Agent.is_user_prompt_node(node) or Agent.is_end_node(node):
         return
     if not (Agent.is_model_request_node(node) or Agent.is_call_tools_node(node)):
         return
-    async with node.stream(run.ctx) as stream:
-        async for event in stream:
-            router.observe_event(event)
-            await child_ctx.emit_event(child_ctx.tool_id_wrapper.wrap_event(event))
+
+    event_processing_failed = False
+    try:
+        async with node.stream(run.ctx) as stream:
+            async for event in stream:
+                try:
+                    router.observe_event(event)
+                    await child_ctx.emit_event(child_ctx.tool_id_wrapper.wrap_event(event))
+                except BaseException:
+                    event_processing_failed = True
+                    raise
+    except BaseException:
+        if Agent.is_model_request_node(node) and not event_processing_failed:
+            telemetry.failed_during_model_request = True
+        raise
+
+    if Agent.is_model_request_node(node):
+        telemetry.successful_model_requests += 1
 
 
 def resolve_subagent_output_type(plan: ResolvedSubagentPlan) -> Any:

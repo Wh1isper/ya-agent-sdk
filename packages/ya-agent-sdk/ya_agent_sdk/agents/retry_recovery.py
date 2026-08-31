@@ -41,7 +41,8 @@ from pydantic_ai.messages import (
 )
 
 from ya_agent_sdk._logger import get_logger
-from ya_agent_sdk.context import AgentContext
+from ya_agent_sdk.agents.models.utils import is_retryable_model_stream_exception
+from ya_agent_sdk.context import AgentContext, StreamRecoveryPolicy
 from ya_agent_sdk.filters.cold_start import _trim_tool_returns
 
 logger = get_logger(__name__)
@@ -49,6 +50,11 @@ logger = get_logger(__name__)
 DEFAULT_STREAM_RESUME_PROMPT = (
     "The previous streaming model request failed before the agent finished. "
     "Continue the task from the available conversation history. Avoid repeating completed work."
+)
+
+_INCOMPLETE_TOOL_RESULT = (
+    "The previous agent attempt ended before this tool produced a terminal result. "
+    "Completion and side-effect status are unknown; verify current state before continuing."
 )
 
 _MEDIA_REMOVED_REMINDER = (
@@ -108,6 +114,53 @@ class RetryRecoveryResult:
     reasons: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class StreamRetryDecision:
+    """One recovery decision from the shared stream retry budgets."""
+
+    recoverable: bool
+    budget: str
+    failures_in_budget: int
+    max_attempts: int
+
+
+@dataclass(slots=True)
+class StreamRetryController:
+    """Track independent execution and transient transport retry budgets."""
+
+    policy: StreamRecoveryPolicy
+    non_transport_failures: int = 0
+    transport_failures: int = 0
+
+    def record_failure(
+        self,
+        exc: BaseException,
+        *,
+        failed_during_model_request: bool,
+        successful_model_request: bool,
+    ) -> StreamRetryDecision:
+        if successful_model_request:
+            self.transport_failures = 0
+
+        if failed_during_model_request and is_retryable_model_stream_exception(exc):
+            self.transport_failures += 1
+            failures = self.transport_failures
+            max_attempts = self.policy.transport_max_attempts
+            budget = "transport"
+        else:
+            self.non_transport_failures += 1
+            failures = self.non_transport_failures
+            max_attempts = self.policy.max_attempts
+            budget = "execution"
+
+        return StreamRetryDecision(
+            recoverable=self.policy.enabled and failures + 1 <= max_attempts,
+            budget=budget,
+            failures_in_budget=failures,
+            max_attempts=max_attempts,
+        )
+
+
 def extract_resume_history(run: Any | None, fallback_history: Sequence[ModelMessage] | None) -> list[ModelMessage]:
     """Extract the latest available messages from a failed run."""
     if run is not None:
@@ -148,8 +201,8 @@ def history_has_unreturned_tool_calls(history: Sequence[ModelMessage]) -> bool:
     return bool(ordinary_calls or native_calls)
 
 
-def close_unreturned_tool_calls(history: Sequence[ModelMessage], error_message: str) -> list[ModelMessage]:
-    """Close ordinary calls and remove incomplete native calls from recovered history."""
+def close_unreturned_tool_calls(history: Sequence[ModelMessage]) -> list[ModelMessage]:
+    """Close incomplete calls with a bounded status independent of exception details."""
     ordinary_calls, native_calls = _unreturned_tool_calls(history)
     if not ordinary_calls and not native_calls:
         return list(history)
@@ -174,11 +227,7 @@ def close_unreturned_tool_calls(history: Sequence[ModelMessage], error_message: 
                     ToolReturnPart(
                         tool_name=tool_name,
                         tool_call_id=tool_call_id,
-                        content=(
-                            "Tool execution did not produce a terminal result before the agent attempt failed. "
-                            "Completion and side-effect status are unknown; verify idempotency and external state before retrying. "
-                            f"agent_error={error_message}"
-                        ),
+                        content=_INCOMPLETE_TOOL_RESULT,
                         outcome="failed",
                     )
                     for tool_call_id, tool_name in ordinary_calls.items()

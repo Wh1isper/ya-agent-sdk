@@ -73,7 +73,7 @@ runtime = create_agent("openai-responses-ws:gpt-5.5")
 # runtime = create_agent("openai-responses-rs:gpt-5.5")
 ```
 
-Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization.
+Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization. WebSocket application error codes are classified as transport failures rather than HTTP statuses; when stream recovery is enabled, transient timeout codes such as `1101` reach the independent transport resume budget.
 
 GPT-5.6 supports independent reasoning effort and reasoning mode controls. Use `openai_responses_pro` for `pro` mode with balanced `medium` effort:
 
@@ -119,7 +119,7 @@ in by setting the same keys, while definitions without it remain unchanged. For 
 when both `FilesystemCapability()` and an available `ShellCapability()` are present,
 shell supersedes the redundant `mkdir`, `move`, `copy`, and `delete` tools.
 
-When stream recovery is enabled, delegated subagents and self forks inherit the root run's effective recovery policy. Each child retries transient provider or network stream failures against its own transport budget and resumes from its own recovered history. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
+When stream recovery is enabled, delegated subagents and self forks use the same overall recovery mechanism as the root run. By default they inherit the root run's effective policy; a trusted host may materialize an explicit child `ModelConfig` policy instead. Each child retries transient provider or network stream failures against its own independent transport budget, resumes from its own recovered history, and accumulates usage across recovered attempts. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
 
 ## Capability Plugins
 

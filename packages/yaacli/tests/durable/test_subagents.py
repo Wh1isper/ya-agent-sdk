@@ -18,6 +18,7 @@ from pydantic_ai.models.function import AgentInfo as FunctionAgentInfo
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 from ya_agent_sdk.capabilities import SupportsDeferredOutput, build_default_capability_catalog
+from ya_agent_sdk.context import ModelConfig, StreamRecoveryPolicy
 from ya_agent_sdk.inputs import InputDisposition, InputOrigin, LogicalRunInputRouter, RunInputLedger
 from ya_agent_sdk.subagents import (
     ResolvedSubagentPlan,
@@ -93,6 +94,62 @@ def test_product_database_contains_no_subagent_tables(tmp_path: Path) -> None:
     with sqlite3.connect(database_path) as connection:
         names = {row[0] for row in connection.execute("SELECT name FROM sqlite_schema WHERE type = 'table'")}
     assert not any(name.startswith("subagent_") for name in names)
+
+
+def test_local_subagent_materializes_explicitly_disabled_child_recovery() -> None:
+    child_model_cfg = ModelConfig(
+        stream_resume_on_error=False,
+        stream_resume_max_attempts=7,
+        stream_transport_resume_max_attempts=11,
+    )
+    plan = SubagentPlanResolver(
+        build_default_capability_catalog(),
+        default_model="test",
+        restart_durable=False,
+    ).resolve(
+        SubagentSpec(
+            route="worker",
+            agent=AgentSpec(
+                name="worker",
+                model="test",
+                metadata={"yaacli_model_cfg": child_model_cfg.model_dump(mode="json")},
+            ),
+        )
+    )
+    record = SubagentExecutionRecord(
+        root_execution_id="child",
+        execution_id="child",
+        owner_scope_id="session",
+        idempotency_key="child",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.foreground,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="work",
+    )
+    inherited_policy = StreamRecoveryPolicy(
+        enabled=True,
+        max_attempts=3,
+        transport_max_attempts=20,
+        resume_prompt="root resume prompt",
+    )
+    child_ctx = TUIContext(stream_recovery_policy=inherited_policy)
+    driver = LocalSubagentDriver(
+        store=MagicMock(spec=FileSubagentExecutionStore),
+        request_limit=2,
+        default_model_cfg=ModelConfig(stream_resume_on_error=True),
+    )
+
+    driver._configure_child_context(plan, record, TUIContext(), child_ctx)
+
+    policy = child_ctx.stream_recovery_policy
+    assert policy is not None
+    assert policy.enabled is False
+    assert policy.max_attempts == 7
+    assert policy.transport_max_attempts == 11
+    assert policy.resume_prompt == "root resume prompt"
 
 
 async def test_file_subagent_store_creates_no_lock_files(tmp_path: Path) -> None:

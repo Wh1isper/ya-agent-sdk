@@ -78,6 +78,11 @@ model = ""
 # max_videos = 0
 # compact_threshold = 0.90
 # proactive_context_management_threshold = 0.5
+# YAACLI defaults stream recovery to true, with 3 execution attempts and an
+# independent 20-attempt budget for consecutive transient transport failures.
+# stream_resume_on_error = true
+# stream_resume_max_attempts = 3
+# stream_transport_resume_max_attempts = 20
 # capabilities = ["vision"]  # Options: vision, image_url, video_understanding, video_url, youtube_url, audio_understanding, document_understanding
 
 # Cumulative model-request limit for one durable logical run

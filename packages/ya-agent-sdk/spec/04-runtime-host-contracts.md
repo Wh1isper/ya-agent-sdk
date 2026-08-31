@@ -76,9 +76,10 @@ execution recovery:
   transport-failure streak;
 - a successful model request resets that transport streak;
 - `stream_resume_max_attempts` independently limits non-transport execution recovery;
-- child runs inherit the root run's effective recovery policy while recovering their
-  own canonical history; and
-- accumulated usage survives recovered attempts.
+- child runs use the same recovery controller and recover their own canonical history;
+- children inherit the root run's effective policy unless a trusted host materializes an
+  explicit child policy; and
+- child usage limits and accumulated usage span all recovered attempts.
 
 Per-call `stream_agent()` values override `ModelConfig` defaults. Transport and stream
 recovery do not consume model-correction budgets.

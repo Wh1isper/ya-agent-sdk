@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast, get_args
@@ -407,7 +407,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         model_settings: ModelSettings | None,
         model_request_parameters: ModelRequestParameters,
         run_context: Any | None = None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse, None]:
         check_allow_model_requests()
         prepared_settings, prepared_parameters = self.prepare_request(model_settings, model_request_parameters)
         settings = cast(OpenAIResponsesModelSettings, prepared_settings or {})
@@ -448,7 +448,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         model_settings: OpenAIResponsesModelSettings,
         model_request_parameters: ModelRequestParameters,
         run_context: Any | None,
-    ) -> AsyncIterator[StreamedResponse]:
+    ) -> AsyncGenerator[StreamedResponse, None]:
         async with super().request_stream(messages, model_settings, model_request_parameters, run_context) as response:
             yield response
 
@@ -645,14 +645,18 @@ def _is_retryable_websocket_request_error(exc: BaseException, options: ModelRequ
 
 
 def _websocket_error_from_event(data: Mapping[str, Any]) -> BaseException:
-    status = data.get("status") or data.get("status_code") or data.get("code")
+    status = data.get("status") or data.get("status_code")
+    code = data.get("code")
     message = data.get("message") or data.get("error") or data.get("type") or "Responses WebSocket error"
     error_obj = data.get("error")
     if isinstance(error_obj, Mapping):
         message = str(error_obj.get("message") or message)
         status = error_obj.get("status") or error_obj.get("status_code") or status
+        code = error_obj.get("code") or code
     if isinstance(status, int):
         return ModelHTTPError(status_code=status, model_name="responses-websocket", body=data)
+    if code is not None:
+        return websockets.WebSocketException(f"Responses WebSocket error {code}: {message}")
     return UnexpectedModelBehavior(str(message))
 
 

@@ -7,7 +7,7 @@ in-process applications can execute a segment directly.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -192,7 +192,7 @@ class AgentExecutionHarness:
         self,
         runtime: AgentRuntime[AgentDepsT, OutputT, EnvT],
         request: AgentSegmentRequest[AgentDepsT, OutputT, EnvT],
-    ) -> AsyncIterator[AgentSegment[AgentDepsT, OutputT, EnvT]]:
+    ) -> AsyncGenerator[AgentSegment[AgentDepsT, OutputT, EnvT], None]:
         async with stream_agent(
             runtime,
             user_prompt=request.user_prompt,

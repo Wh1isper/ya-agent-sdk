@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import compare_digest
@@ -119,7 +119,7 @@ class ClawApplication:
         return app
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI) -> AsyncIterator[None]:  # noqa: C901
+    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: C901
         logger.info(
             "Starting YA Claw app environment={} instance_id={} host={} port={} public_base_url={}",
             self.settings.environment,

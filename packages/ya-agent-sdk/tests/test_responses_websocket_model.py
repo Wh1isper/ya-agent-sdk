@@ -7,17 +7,19 @@ from contextlib import asynccontextmanager
 import httpx
 import httpx2
 import pytest
+import websockets
 from openai import AsyncOpenAI
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.providers.openai import OpenAIProvider
-from ya_agent_sdk.agents.models.utils import ModelRequestRetryOptions
+from ya_agent_sdk.agents.models.utils import ModelRequestRetryOptions, is_retryable_model_stream_exception
 from ya_agent_sdk.agents.models.websocket import (
     DEFAULT_WEBSOCKET_BETA,
     DEFAULT_WEBSOCKET_MAX_SIZE,
     WebsocketResponsesModel,
     _is_retryable_websocket_request_error,
+    _websocket_error_from_event,
     _WebsocketResponseStream,
     build_openai_responses_websocket_model,
     is_recoverable_websocket_error,
@@ -32,6 +34,30 @@ def test_websocket_retry_classification_supports_both_httpx_families(error_type)
 
     assert is_recoverable_websocket_error(error) is True
     assert _is_retryable_websocket_request_error(error, ModelRequestRetryOptions()) is True
+
+
+def test_websocket_application_error_code_remains_retryable_transport_failure() -> None:
+    error = _websocket_error_from_event({
+        "type": "error",
+        "code": 1101,
+        "message": "upstream response timed out",
+    })
+
+    assert isinstance(error, websockets.WebSocketException)
+    assert "1101" in str(error)
+    assert is_retryable_model_stream_exception(error) is True
+
+
+def test_websocket_http_status_error_keeps_http_retry_classification() -> None:
+    error = _websocket_error_from_event({
+        "type": "error",
+        "status": 400,
+        "code": "invalid_request",
+        "message": "invalid request",
+    })
+
+    assert isinstance(error, ModelHTTPError)
+    assert is_retryable_model_stream_exception(error) is False
 
 
 @pytest.mark.asyncio
