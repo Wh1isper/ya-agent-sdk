@@ -1,5 +1,8 @@
 """Tests for NoteManager and note integration in AgentContext."""
 
+import json
+from xml.etree.ElementTree import fromstring
+
 from ya_agent_sdk.context.note import NoteManager
 
 
@@ -104,7 +107,7 @@ async def test_notes_restore_via_with_state():
 
 
 async def test_notes_in_context_instructions():
-    """Test that note entries appear in runtime instructions XML."""
+    """Test that runtime context contains a compact key-only note index."""
     from ya_agent_sdk.context import AgentContext
 
     async with AgentContext() as ctx:
@@ -112,11 +115,94 @@ async def test_notes_in_context_instructions():
         ctx.note_manager.set("os", "macOS")
 
         instructions = await ctx.get_context_instructions(is_user_prompt=True)
-        assert "<notes " in instructions
-        assert 'key="lang"' in instructions
-        assert 'key="os"' in instructions
+        notes = fromstring(instructions).find("notes")  # noqa: S314
+
+        assert notes is not None
+        assert notes.attrib == {
+            "total": "2",
+            "shown": "2",
+            "omitted": "0",
+            "order": "key",
+            "hint": "Note values are omitted. Use note_get with a key to read one note; omit the key to list all notes.",
+        }
+        assert json.loads(notes.text or "") == ["lang", "os"]
         assert "Chinese" not in instructions
         assert "macOS" not in instructions
+
+
+async def test_notes_context_index_limits_key_count():
+    """Test that runtime context lists at most fifty sorted note keys."""
+    from ya_agent_sdk.context import AgentContext
+
+    async with AgentContext() as ctx:
+        for index in reversed(range(60)):
+            ctx.note_manager.set(f"key-{index:02d}", f"value-{index}")
+
+        instructions = await ctx.get_context_instructions(is_user_prompt=True)
+        notes = fromstring(instructions).find("notes")  # noqa: S314
+
+        assert notes is not None
+        assert notes.get("total") == "60"
+        assert notes.get("shown") == "50"
+        assert notes.get("omitted") == "10"
+        assert json.loads(notes.text or "") == [f"key-{index:02d}" for index in range(50)]
+        assert "value-" not in instructions
+
+
+async def test_notes_context_index_respects_serialized_byte_budget():
+    """Test that XML escaping and UTF-8 keys stay within the hint budget."""
+    from ya_agent_sdk.context import AgentContext
+
+    async with AgentContext() as ctx:
+        ctx.note_manager.set("00-" + "&" * 700, "first value")
+        ctx.note_manager.set("01-" + "界" * 1_000, "second value")
+
+        instructions = await ctx.get_context_instructions(is_user_prompt=True)
+        notes = fromstring(instructions).find("notes")  # noqa: S314
+        notes_line = next(line for line in instructions.splitlines() if line.lstrip().startswith("<notes "))
+        compact_hint = ctx.get_notes_context_hint()
+
+        assert notes is not None
+        assert compact_hint is not None
+        assert len(notes_line.encode("utf-8")) <= 4_000
+        assert len(compact_hint.encode("utf-8")) <= 4_000
+        assert fromstring(compact_hint).attrib == notes.attrib  # noqa: S314
+        assert notes.get("total") == "2"
+        assert notes.get("shown") == "1"
+        assert notes.get("omitted") == "1"
+        assert json.loads(notes.text or "") == ["00-" + "&" * 700]
+        assert "first value" not in instructions
+        assert "second value" not in instructions
+
+
+async def test_notes_context_index_round_trips_xml_unsafe_keys():
+    """Test that every stored string key is represented through XML-safe JSON escapes."""
+    from ya_agent_sdk.context import AgentContext
+
+    keys = [
+        'quote-"',
+        "slash-\\",
+        "line-\n",
+        "cjk-界",
+        "emoji-😀",
+        "xml-<&>",
+        "noncharacter-\ufffe",
+        "surrogate-\ud800",
+    ]
+    async with AgentContext() as ctx:
+        for key in keys:
+            ctx.note_manager.set(key, "private value")
+
+        instructions = await ctx.get_context_instructions(is_user_prompt=True)
+        notes = fromstring(instructions).find("notes")  # noqa: S314
+        compact_hint = ctx.get_notes_context_hint()
+
+        assert notes is not None
+        assert compact_hint is not None
+        assert json.loads(notes.text or "") == sorted(keys)
+        assert json.loads(fromstring(compact_hint).text or "") == sorted(keys)  # noqa: S314
+        assert "private value" not in instructions
+        assert "private value" not in compact_hint
 
 
 async def test_notes_not_in_instructions_when_empty():
@@ -125,7 +211,7 @@ async def test_notes_not_in_instructions_when_empty():
 
     async with AgentContext() as ctx:
         instructions = await ctx.get_context_instructions(is_user_prompt=True)
-        assert "<notes>" not in instructions
+        assert "<notes" not in instructions
 
 
 async def test_notes_not_in_instructions_for_tool_response():
@@ -136,4 +222,21 @@ async def test_notes_not_in_instructions_for_tool_response():
         ctx.note_manager.set("lang", "Chinese")
 
         instructions = await ctx.get_context_instructions(is_user_prompt=False)
-        assert "<notes>" not in instructions
+        assert "<notes" not in instructions
+
+
+async def test_notes_use_explicit_hint_during_nested_compact():
+    """Test that nested compact receives one explicit note index instead of a duplicate runtime hint."""
+    from ya_agent_sdk.context import AgentContext
+
+    async with AgentContext() as ctx:
+        ctx.note_manager.set("resume-plan", "private value")
+        object.__setattr__(ctx, "_compact_depth", 1)
+
+        instructions = await ctx.get_context_instructions(is_user_prompt=True)
+        explicit_hint = ctx.get_notes_context_hint()
+
+        assert "<notes" not in instructions
+        assert explicit_hint is not None
+        assert "resume-plan" in explicit_hint
+        assert "private value" not in explicit_hint

@@ -5,6 +5,8 @@ Before providing your final summary, wrap your analysis in `analysis` field to o
 
 Do not carry a merely inspected or rejected candidate's workflow, mandatory requirements, referenced-resource instructions, or proposed next steps into any continuation section. If historically relevant, record only that it was inspected and not activated.
 
+A compact request may include a bounded durable-note key index. Note values persist independently and are not available during compaction. When a supplied key is relevant to unfinished work, include its exact key and a short continuation reason in an optional Relevant Note Keys section. Do not copy or infer note values merely to retain them in the summary, and omit the section when no supplied key is relevant.
+
 In your analysis process:
 
 1. Chronologically analyze each message and section of the conversation. For each section thoroughly identify:

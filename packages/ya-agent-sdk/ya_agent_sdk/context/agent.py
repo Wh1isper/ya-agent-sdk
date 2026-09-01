@@ -65,6 +65,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -144,6 +145,16 @@ PROJECT_GUIDANCE_TAG = "project-guidance"
 
 USER_RULES_TAG = "user-rules"
 """Tag for user-level rules (e.g., RULES.md). Injected by application layer."""
+
+_NOTES_CONTEXT_MAX_BYTES = 4_000
+"""Maximum model-visible size of the serialized notes hint."""
+
+_NOTES_CONTEXT_MAX_KEYS = 50
+"""Maximum number of sorted note keys included in one notes hint."""
+
+_NOTES_CONTEXT_HINT = (
+    "Note values are omitted. Use note_get with a key to read one note; omit the key to list all notes."
+)
 
 
 # =============================================================================
@@ -1677,25 +1688,53 @@ class AgentContext(BaseModel):
         item.text = reminder_text
         parts.append(_xml_to_string(reminder_root))
 
-    def _build_notes_element(self, parent: Element, *, is_user_prompt: bool = True) -> None:
-        """Build notes XML element and append to parent if entries exist.
-
-        Args:
-            parent: Parent XML element to append to.
-            is_user_prompt: Only include note keys on user prompts to reduce noise.
-        """
-        if not is_user_prompt:
-            return
-
+    def _create_notes_context_element(self) -> Element | None:
+        """Create the bounded, key-only notes element shared by request and compact prompts."""
         keys = self.note_manager.list_keys()
         if not keys:
-            return
+            return None
 
-        notes_elem = SubElement(parent, "notes")
-        notes_elem.set("hint", "Note values are omitted from runtime context. Use note_get to read values by key.")
-        for key in keys:
-            entry_elem = SubElement(notes_elem, "entry")
-            entry_elem.set("key", key)
+        notes_elem = Element(
+            "notes",
+            {
+                "total": str(len(keys)),
+                "shown": "0",
+                "omitted": str(len(keys)),
+                "order": "key",
+                "hint": _NOTES_CONTEXT_HINT,
+            },
+        )
+        shown_keys: list[str] = []
+        notes_elem.text = "[]"
+
+        for key in keys[:_NOTES_CONTEXT_MAX_KEYS]:
+            shown_keys.append(key)
+            notes_elem.set("shown", str(len(shown_keys)))
+            notes_elem.set("omitted", str(len(keys) - len(shown_keys)))
+            notes_elem.text = json.dumps(shown_keys, ensure_ascii=True, separators=(",", ":"))
+            # The request-context pretty printer adds two leading spaces to this
+            # single-line element, so reserve those bytes in the model-visible budget.
+            if len(tostring(notes_elem, encoding="utf-8")) + 2 > _NOTES_CONTEXT_MAX_BYTES:
+                shown_keys.pop()
+                notes_elem.set("shown", str(len(shown_keys)))
+                notes_elem.set("omitted", str(len(keys) - len(shown_keys)))
+                notes_elem.text = json.dumps(shown_keys, ensure_ascii=True, separators=(",", ":"))
+                break
+
+        return notes_elem
+
+    def get_notes_context_hint(self) -> str | None:
+        """Return the bounded note-key index for explicit model-facing prompts."""
+        notes_elem = self._create_notes_context_element()
+        return _xml_to_string(notes_elem) if notes_elem is not None else None
+
+    def _build_notes_element(self, parent: Element, *, is_user_prompt: bool = True) -> None:
+        """Append the bounded note-key index to user-prompt runtime context."""
+        if not is_user_prompt or self._compact_depth > 0:
+            return
+        notes_elem = self._create_notes_context_element()
+        if notes_elem is not None:
+            parent.append(notes_elem)
 
     def prepare_new_run(self, *, resume_logical_run: bool = False) -> Self:
         """Create an isolated context copy for a native run attempt.

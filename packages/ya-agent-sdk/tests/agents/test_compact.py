@@ -62,6 +62,9 @@ def test_compact_prompts_preserve_only_activated_skills() -> None:
         assert "merely inspected or rejected" in prompt
         assert "Do not carry a merely inspected or rejected candidate's workflow" in prompt
 
+    assert "Relevant Note Keys" in compact_module.CACHE_FRIENDLY_COMPACT_INSTRUCTION
+    assert "Relevant Note Keys" in context_description
+
 
 # Full tag set including application-level tags for testing
 _ALL_TAGS = (*_DEFAULT_INJECTED_TAGS, PROJECT_GUIDANCE_TAG, USER_RULES_TAG)
@@ -1203,6 +1206,7 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     agent_context.model_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
     agent_context.user_prompts = "hello"
     agent_context.previous_assistant_response_reference = "1. first option\n2. second option"
+    agent_context.note_manager.set("resume-plan", "private note value")
     object.__setattr__(agent_context, "_stream_queue_enabled", True)
 
     mock_run_ctx = MagicMock()
@@ -1234,9 +1238,13 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
     assert len(mock_run_ctx.agent._output_validators) == 1
     assert compact_agent._output_validators == []
     call_args = compact_agent.run_stream.call_args
-    assert call_args.args[0] == (
-        f"{compact_module.CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{compact_module.CACHE_FRIENDLY_COMPACT_PROMPT}"
+    assert call_args.args[0] == compact_module._build_compact_prompt(
+        f"{compact_module.CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{compact_module.CACHE_FRIENDLY_COMPACT_PROMPT}",
+        agent_context,
     )
+    assert "resume-plan" in call_args.args[0]
+    assert "private note value" not in call_args.args[0]
+    assert "persist independently" in call_args.args[0]
     assert call_args.kwargs["message_history"] == message_history
     assert call_args.kwargs["deps"] is agent_context
     assert call_args.kwargs["output_type"] is str
@@ -1356,6 +1364,7 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
     ]
     agent_context.model_cfg = ModelConfig(context_window=10, compact_threshold=0.1)
     agent_context.user_prompts = "hello"
+    agent_context.note_manager.set("implementation-state", "private implementation details")
     object.__setattr__(agent_context, "_stream_queue_enabled", True)
 
     mock_run_ctx = MagicMock()
@@ -1383,7 +1392,12 @@ async def test_compact_filter_uses_agent_iter_and_records_usage(agent_context: A
 
     fake_agent.iter.assert_called_once()
     call_args = fake_agent.iter.call_args
-    assert call_args.args[0] == compact_module.DEFAULT_COMPACT_INSTRUCTION
+    assert call_args.args[0] == compact_module._build_compact_prompt(
+        compact_module.DEFAULT_COMPACT_INSTRUCTION,
+        agent_context,
+    )
+    assert "implementation-state" in call_args.args[0]
+    assert "private implementation details" not in call_args.args[0]
     assert call_args.kwargs["message_history"] == message_history
     compact_deps = call_args.kwargs["deps"]
     assert isinstance(compact_deps, AgentContext)

@@ -73,6 +73,7 @@ Transient data is added by request-only `wrap_model_request` decorators:
 - Environment paths and shell configuration;
 - active process status summaries;
 - active agent/subagent summaries;
+- a bounded note-key index on user prompts;
 - one-shot file inspection reminders; and
 - provider-specific media projection.
 
@@ -84,6 +85,22 @@ assigned to graph state.
 
 A one-shot source is cleared only after `handler()` returns a model response. If the
 handler raises, the source remains pending for recovery/retry.
+
+The note index does not alter note storage or inject note values. On user prompts it
+serializes at most 50 alphabetically sorted keys into one compact JSON array inside the
+runtime-context `notes` element. The complete model-visible element is limited to 4,000
+UTF-8 bytes and reports `total`, `shown`, and `omitted` counts. The model uses `note_get`
+to discover omitted keys or read values. Tool-response and retry requests omit the
+index.
+
+Compaction still strips request-envelope runtime context from canonical history. When
+notes exist, both compact implementations explicitly receive the same bounded key index
+in the compact prompt. The nested cache-friendly compact request suppresses the ordinary
+runtime note index so the model sees one copy. Durable note values remain outside the
+summary. The compact model may add an optional `Relevant Note Keys` section containing
+exact supplied keys and a short continuation reason; it omits that section when no
+supplied key is relevant. This lets the resumed agent read selected values with
+`note_get` without duplicating note state into compacted history.
 
 ### 2.4 Canonical conversation content
 
