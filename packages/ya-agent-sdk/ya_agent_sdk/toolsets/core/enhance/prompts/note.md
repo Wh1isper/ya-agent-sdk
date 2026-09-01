@@ -9,7 +9,9 @@
 <best-practices>
 - Use descriptive, stable keys
 - Keep values concise and delete entries when they are stale
-- Use `note_get` when runtime context lists a relevant note key and the value is needed for the current task
+- Runtime context contains a bounded note-key index; use `note_get` without a key when you need to discover omitted notes
+- Use `note_get` with a relevant key when its value is needed for the current task
+- Notes persist independently across compact; summaries should reference relevant keys instead of copying note values for retention
 - Store large data in files and keep only the file path or index in notes
 </best-practices>
 </note-guidelines>

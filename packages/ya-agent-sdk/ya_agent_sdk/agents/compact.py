@@ -125,11 +125,20 @@ Use this exact Markdown structure:
 
 10. Files to Inspect on Resume:
    [List only file paths that may need to be inspected when resuming. Do not include file contents.]
+
+11. Relevant Note Keys (omit this section when no supplied note key is relevant):
+   - [Exact note key and why it matters for continuation]
 """
 
 CACHE_FRIENDLY_COMPACT_PROMPT = """Compact the conversation history into the requested continuation summary format.
 Focus on details needed to continue the user's work accurately after older messages are removed.
 Return only the summary text."""
+
+_COMPACT_NOTES_GUIDANCE = """Durable notes persist independently of compacted conversation history.
+The bounded index below contains note keys only; note values are not available during compaction.
+When a listed note is relevant to unfinished work, include its exact key and a short reason in the optional Relevant Note Keys section.
+Do not copy or infer note values merely to preserve them in the summary. The resumed agent can read relevant values with note_get.
+Omit the Relevant Note Keys section when none of the supplied keys are relevant."""
 
 # Settings keys that should NOT be inherited by compact agent.
 # Cache: compact has different prompts/tools/history; inheriting cache settings
@@ -321,6 +330,7 @@ class CondenseResult(BaseModel):
 9. Past Interactions: A concise bullet list of key interactions (both sides) that already occurred, to prevent repetition. Include your actions/proposals and user's responses, approaches tried and outcomes, explanations already given.
 10. Activated Skills: List only Skills that were activated and remain relevant to unfinished work, with a reminder to re-read them when resuming. Do not include Skills that were merely inspected or rejected as candidates.
 11. Files to Inspect on Resume: List file paths that may need to be inspected when resuming. Do not include file contents and do not assume they will be automatically loaded.
+12. Relevant Note Keys: When a bounded durable-note index is supplied, list only exact keys that matter for unfinished work and why. Omit this section when none are relevant. Do not copy or infer note values merely to preserve them in the summary.
 """,
     )
     original_prompt: str = Field(
@@ -397,6 +407,14 @@ def get_compact_agent(
 # =============================================================================
 # Utilities
 # =============================================================================
+
+
+def _build_compact_prompt(base_prompt: str, agent_ctx: AgentContext) -> str:
+    """Add the bounded durable-note index to an explicit compact prompt."""
+    notes_hint = agent_ctx.get_notes_context_hint()
+    if notes_hint is None:
+        return base_prompt
+    return f"{base_prompt}\n\n{_COMPACT_NOTES_GUIDANCE}\n\n{notes_hint}"
 
 
 def condense_result_to_markdown(result: CondenseResult) -> str:
@@ -586,7 +604,10 @@ def create_cache_friendly_compact_filter(
                 if hasattr(compact_agent, "_output_validators"):
                     compact_agent._output_validators = []  # pyright: ignore[reportAttributeAccessIssue]
                 async with compact_agent.run_stream(
-                    f"{CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{CACHE_FRIENDLY_COMPACT_PROMPT}",
+                    _build_compact_prompt(
+                        f"{CACHE_FRIENDLY_COMPACT_INSTRUCTION}\n\n{CACHE_FRIENDLY_COMPACT_PROMPT}",
+                        agent_ctx,
+                    ),
                     message_history=message_history,
                     deps=agent_ctx,
                     output_type=str,
@@ -778,7 +799,7 @@ def create_compact_filter(
                 # Run compact agent on trimmed message history with AgentContext as deps
                 result = await _run_compact_iter(
                     agent,
-                    prompt=DEFAULT_COMPACT_INSTRUCTION,
+                    prompt=_build_compact_prompt(DEFAULT_COMPACT_INSTRUCTION, agent_ctx),
                     message_history=trimmed_history,
                     deps=AgentContext(
                         env=agent_ctx.env,

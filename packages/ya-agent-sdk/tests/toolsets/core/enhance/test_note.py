@@ -10,7 +10,8 @@ from ya_agent_sdk.toolsets.core.enhance.note import NoteGetTool, NoteTool
 async def test_note_tool_attributes(agent_context: AgentContext) -> None:
     """Should have correct name, description and instruction."""
     assert NoteTool.name == "note"
-    assert "use note_get to read values" in NoteTool.description
+    assert "bounded note-key index" in NoteTool.description
+    assert "use note_get to discover omitted notes or read values" in NoteTool.description
 
     tool = NoteTool()
     mock_run_ctx = MagicMock(spec=RunContext)

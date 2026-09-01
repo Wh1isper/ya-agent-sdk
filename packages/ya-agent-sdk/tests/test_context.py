@@ -1,9 +1,11 @@
 """Tests for ya_agent_sdk.context module."""
 
+import json
 import re
 from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from xml.etree.ElementTree import fromstring
 
 import pytest
 from pydantic_ai.usage import RunUsage
@@ -634,17 +636,21 @@ async def test_get_context_instructions_handoff_warning_includes_note_cleanup(tm
 
 
 async def test_get_context_instructions_with_notes_lists_keys_only(env: LocalEnvironment) -> None:
-    """Should include note keys in runtime context and omit note values."""
+    """Should include a bounded note-key index and omit note values."""
     async with AgentContext(env=env) as ctx:
         ctx.note_manager.set("language", "Chinese communication")
         ctx.note_manager.set("project", "Secret implementation details")
 
         instructions = await ctx.get_context_instructions(is_user_prompt=True)
+        notes = fromstring(instructions).find("notes")  # noqa: S314
 
-        assert "<notes" in instructions
-        assert "note_get" in instructions
-        assert 'key="language"' in instructions
-        assert 'key="project"' in instructions
+        assert notes is not None
+        assert notes.get("total") == "2"
+        assert notes.get("shown") == "2"
+        assert notes.get("omitted") == "0"
+        assert notes.get("order") == "key"
+        assert "note_get" in notes.get("hint", "")
+        assert json.loads(notes.text or "") == ["language", "project"]
         assert "Chinese communication" not in instructions
         assert "Secret implementation details" not in instructions
 

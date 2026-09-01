@@ -33,8 +33,8 @@ class NoteTool(BaseTool):
     name = "note"
     description = (
         "Update or delete a note entry. "
-        "Notes persist across turns. Runtime context shows note keys; use note_get to read values. "
-        "Omit value to delete the entry."
+        "Notes persist across turns. Runtime context shows a bounded note-key index; "
+        "use note_get to discover omitted notes or read values. Omit value to delete the entry."
     )
 
     async def get_instruction(self, ctx: RunContext[AgentContext]) -> Instruction | None:
