@@ -11,6 +11,7 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage
+from websockets.datastructures import Headers
 from ya_oauth.types import OAuthAccount, TokenSnapshot
 from ya_oauth_provider.codex import (
     CodexResponsesModel,
@@ -220,7 +221,11 @@ async def test_codex_websocket_captures_handshake_state_before_send_failure() ->
 
     class FakeResponse:
         def __init__(self) -> None:
-            self.headers = {CODEX_TURN_STATE_HEADER: "handshake-state"}
+            self.headers = Headers([
+                ("set-cookie", "first=value"),
+                ("set-cookie", "second=value"),
+                (CODEX_TURN_STATE_HEADER, "handshake-state"),
+            ])
 
     class FakeConnection:
         def __init__(self) -> None:

@@ -44,9 +44,13 @@ class _CodexTurnState:
     def capture(self, headers: Mapping[str, Any]) -> None:
         if self.value is not None:
             return
-        for name, value in headers.items():
+        for name in headers:
             if str(name).lower() != CODEX_TURN_STATE_HEADER:
                 continue
+            try:
+                value = headers[name]
+            except LookupError:
+                return
             if isinstance(value, str):
                 normalized = value.strip()
             elif isinstance(value, list) and value and isinstance(value[0], str):
