@@ -79,10 +79,15 @@ execution recovery:
 - child runs use the same recovery controller and recover their own canonical history;
 - children inherit the root run's effective policy unless a trusted host materializes an
   explicit child policy; and
-- child usage limits and accumulated usage span all recovered attempts.
+- child usage limits and accumulated usage span all recovered attempts; and
+- a Responses WebSocket pre-stream retry reuses one prepared `response.create` payload
+  across connection attempts. An opening-handshake failure precedes payload submission,
+  while a failure after `create_sent=True` is an ambiguous replay boundary.
 
 Per-call `stream_agent()` values override `ModelConfig` defaults. Transport and stream
-recovery do not consume model-correction budgets.
+recovery do not consume model-correction budgets. Responses WebSocket retry warnings
+identify the failure stage, attempt budget, opening timeout, a content-safe request
+fingerprint, payload-send state, and observed event count.
 
 SDK main and in-process child stream drivers use hook-aware graph advancement so
 Pydantic AI node lifecycle and pending-message behavior are preserved. A host must not

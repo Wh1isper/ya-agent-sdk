@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
@@ -27,7 +29,7 @@ from pydantic_ai.models.openai import _resolve_openai_service_tier as _openai_re
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
-from tenacity import AsyncRetrying, retry_if_exception
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception
 
 from ya_agent_sdk.agents.models.utils import (
     ModelRequestRetryOptions,
@@ -47,6 +49,8 @@ DEFAULT_WEBSOCKET_BETA = "responses_websockets=2026-02-06"
 DEFAULT_WEBSOCKET_MAX_SIZE = 64 * 1024 * 1024
 _WS_DISABLE_TTL_SECONDS = 300.0
 _WS_CLEANUP_TIMEOUT_SECONDS = 2.0
+_DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS = 10.0
+_REQUEST_FINGERPRINT_LENGTH = 16
 _RECOVERABLE_HTTP_STATUS_CODES = {401, 403, 404, 408, 409, 425, 429, 500, 502, 503, 504}
 
 HeaderBuilder = Callable[[Mapping[str, str]], Awaitable[dict[str, str]]]
@@ -160,6 +164,18 @@ def normalize_responses_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in normalized.items() if value is not None}
 
 
+def env_responses_websocket_open_timeout() -> float:
+    """Read the positive WebSocket opening-handshake timeout from the environment."""
+    name = "YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_OPEN_TIMEOUT_SECONDS"
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return _DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    return timeout
+
+
 class _WebsocketResponseStream:
     """Async stream wrapper compatible with Pydantic AI's OpenAI Responses stream adapter."""
 
@@ -169,7 +185,7 @@ class _WebsocketResponseStream:
         url: str,
         headers: Mapping[str, str],
         payload: Mapping[str, Any],
-        open_timeout: float = 10.0,
+        open_timeout: float = _DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS,
         ping_interval: float | None = 20.0,
         ping_timeout: float | None = 20.0,
         max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
@@ -179,6 +195,8 @@ class _WebsocketResponseStream:
         self.url = url
         self.headers = dict(headers)
         self.payload = dict(payload)
+        self._payload_json = json.dumps(self.payload, separators=(",", ":"))
+        self.request_fingerprint = hashlib.sha256(self._payload_json.encode()).hexdigest()[:_REQUEST_FINGERPRINT_LENGTH]
         self.open_timeout = open_timeout
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
@@ -202,6 +220,10 @@ class _WebsocketResponseStream:
     def websocket_upgraded(self) -> bool:
         return self._websocket_upgraded
 
+    @property
+    def create_sent(self) -> bool:
+        return self._create_sent
+
     async def __aenter__(self) -> _WebsocketResponseStream:
         if self._connection is not None:
             return self
@@ -217,7 +239,7 @@ class _WebsocketResponseStream:
         self._connection = connection
         self._websocket_upgraded = True
         try:
-            await connection.send(json.dumps(self.payload, separators=(",", ":")))
+            await connection.send(self._payload_json)
             self._create_sent = True
         except BaseException:
             await self._best_effort_cleanup(
@@ -357,7 +379,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
     _payload_normalizer: PayloadNormalizer = field(default=normalize_responses_payload, repr=False)
     _fallback_state: ResponsesWebsocketFallbackState = field(repr=False)
     _websocket_beta: str | None = field(default=None, repr=False)
-    _websocket_open_timeout: float = field(default=10.0, repr=False)
+    _websocket_open_timeout: float = field(default=_DEFAULT_WEBSOCKET_OPEN_TIMEOUT_SECONDS, repr=False)
     _websocket_max_size: int | None = field(default=DEFAULT_WEBSOCKET_MAX_SIZE, repr=False)
     _websocket_retry_options: ModelRequestRetryOptions = field(repr=False)
 
@@ -372,7 +394,7 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         payload_normalizer: PayloadNormalizer = normalize_responses_payload,
         websocket_mode: ResponsesWebsocketMode = "auto",
         websocket_beta: str | None = DEFAULT_WEBSOCKET_BETA,
-        websocket_open_timeout: float = 10.0,
+        websocket_open_timeout: float | None = None,
         websocket_max_size: int | None = DEFAULT_WEBSOCKET_MAX_SIZE,
         websocket_retry_options: ModelRequestRetryOptions | None = None,
     ) -> None:
@@ -383,7 +405,11 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         self._payload_normalizer = payload_normalizer
         self._fallback_state = ResponsesWebsocketFallbackState(mode=websocket_mode)
         self._websocket_beta = websocket_beta
-        self._websocket_open_timeout = websocket_open_timeout
+        self._websocket_open_timeout = (
+            env_responses_websocket_open_timeout() if websocket_open_timeout is None else websocket_open_timeout
+        )
+        if not math.isfinite(self._websocket_open_timeout) or self._websocket_open_timeout <= 0:
+            raise ValueError("websocket_open_timeout must be a positive finite number")
         self._websocket_max_size = websocket_max_size
         self._websocket_retry_options = websocket_retry_options or env_model_request_retry_options()
 
@@ -418,11 +444,17 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
 
         stream: _WebsocketResponseStream | None = None
         try:
+            payload = await self._build_websocket_payload(
+                cast(list[ModelRequest | ModelResponse], messages),
+                settings,
+                prepared_parameters,
+            )
             stream, response = await self._create_websocket_response_with_retry(
                 lambda: self._create_websocket_stream(
                     cast(list[ModelRequest | ModelResponse], messages),
                     settings,
                     prepared_parameters,
+                    payload=payload,
                 ),
                 settings,
                 prepared_parameters,
@@ -461,17 +493,29 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         if not self._websocket_retry_options.should_retry:
             return await self._create_websocket_response(attempt, model_settings, model_request_parameters)
 
-        retrying = AsyncRetrying(
-            **build_model_request_retry_config(
-                self._websocket_retry_options,
-                retry=retry_if_exception(
-                    lambda exc: _is_retryable_websocket_request_error(exc, self._websocket_retry_options)
-                ),
-            )
+        failed_stream: _WebsocketResponseStream | None = None
+
+        def record_failure(stream: _WebsocketResponseStream) -> None:
+            nonlocal failed_stream
+            failed_stream = stream
+
+        retry_config = build_model_request_retry_config(
+            self._websocket_retry_options,
+            retry=retry_if_exception(
+                lambda exc: _is_retryable_websocket_request_error(exc, self._websocket_retry_options)
+            ),
         )
+        retry_config["before_sleep"] = lambda state: self._log_websocket_retry(state, failed_stream)
+        retrying = AsyncRetrying(**retry_config)
         async for retry_attempt in retrying:
             with retry_attempt:
-                return await self._create_websocket_response(attempt, model_settings, model_request_parameters)
+                failed_stream = None
+                return await self._create_websocket_response(
+                    attempt,
+                    model_settings,
+                    model_request_parameters,
+                    on_error=record_failure,
+                )
         raise RuntimeError("Responses WebSocket retry controller did not make any attempts")
 
     async def _create_websocket_response(
@@ -479,6 +523,8 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
         attempt: WebsocketCreateAttempt,
         model_settings: OpenAIResponsesModelSettings,
         model_request_parameters: ModelRequestParameters,
+        *,
+        on_error: Callable[[_WebsocketResponseStream], None] | None = None,
     ) -> tuple[_WebsocketResponseStream, StreamedResponse]:
         stream = await attempt()
         try:
@@ -489,17 +535,61 @@ class WebsocketResponsesModel(OpenAIResponsesModel):
                 model_request_parameters,
             )
         except BaseException:
+            if on_error is not None:
+                on_error(stream)
             await stream.__aexit__(None, None, None)
             raise
         return stream, response
+
+    def _log_websocket_retry(
+        self,
+        retry_state: RetryCallState,
+        stream: _WebsocketResponseStream | None,
+    ) -> None:
+        exception = retry_state.outcome.exception() if retry_state.outcome is not None else None
+        wait_seconds = retry_state.next_action.sleep if retry_state.next_action is not None else 0.0
+        if stream is None:
+            stage = "request_setup"
+            request_fingerprint = "unavailable"
+            create_sent = False
+            events_seen = 0
+        else:
+            if not stream.websocket_upgraded:
+                stage = "opening_handshake"
+            elif not stream.create_sent:
+                stage = "response_create_send"
+            else:
+                stage = "first_response_event"
+            request_fingerprint = stream.request_fingerprint
+            create_sent = stream.create_sent
+            events_seen = stream.events_seen
+        logger.warning(
+            "Retrying Responses WebSocket request model=%s stage=%s attempt=%s/%s "
+            "wait_seconds=%.3f open_timeout_seconds=%.3f request_fingerprint=%s "
+            "create_sent=%s events_seen=%s error_type=%s error=%s",
+            self.model_name,
+            stage,
+            retry_state.attempt_number,
+            self._websocket_retry_options.attempts,
+            wait_seconds,
+            self._websocket_open_timeout,
+            request_fingerprint,
+            create_sent,
+            events_seen,
+            type(exception).__name__ if exception is not None else "unknown",
+            exception,
+        )
 
     async def _create_websocket_stream(
         self,
         messages: list[ModelRequest | ModelResponse],
         model_settings: OpenAIResponsesModelSettings,
         model_request_parameters: ModelRequestParameters,
+        *,
+        payload: Mapping[str, Any] | None = None,
     ) -> _WebsocketResponseStream:
-        payload = await self._build_websocket_payload(messages, model_settings, model_request_parameters)
+        if payload is None:
+            payload = await self._build_websocket_payload(messages, model_settings, model_request_parameters)
         extra_headers, timeout = self._build_request_options(model_settings)
         headers = await self._build_websocket_headers(extra_headers)
         if timeout is not None and not _is_omitted(timeout):
@@ -709,6 +799,7 @@ __all__ = [
     "WebsocketResponsesModel",
     "build_openai_responses_websocket_model",
     "env_responses_websocket_mode",
+    "env_responses_websocket_open_timeout",
     "is_recoverable_websocket_error",
     "normalize_responses_payload",
     "resolve_websocket_mode",

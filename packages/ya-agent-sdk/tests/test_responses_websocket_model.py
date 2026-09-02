@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
@@ -22,6 +23,7 @@ from ya_agent_sdk.agents.models.websocket import (
     _websocket_error_from_event,
     _WebsocketResponseStream,
     build_openai_responses_websocket_model,
+    env_responses_websocket_open_timeout,
     is_recoverable_websocket_error,
     responses_websocket_url,
 )
@@ -81,6 +83,23 @@ def test_responses_websocket_url() -> None:
     assert responses_websocket_url("https://api.openai.com/v1") == "wss://api.openai.com/v1/responses"
     assert responses_websocket_url("http://localhost:8080/v1") == "ws://localhost:8080/v1/responses"
     assert responses_websocket_url("wss://example.test/custom", path="events") == "wss://example.test/custom/events"
+
+
+def test_responses_websocket_open_timeout_reads_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_OPEN_TIMEOUT_SECONDS", "17.5")
+
+    assert env_responses_websocket_open_timeout() == 17.5
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "inf", "nan"])
+def test_responses_websocket_open_timeout_rejects_non_positive_or_non_finite_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_OPEN_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ValueError, match="must be a positive finite number"):
+        env_responses_websocket_open_timeout()
 
 
 @pytest.mark.asyncio
@@ -799,6 +818,8 @@ async def test_websocket_model_retries_recoverable_connect_errors_before_http_fa
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts = 0
+    payload_builds = 0
+    attempted_payloads: list[object] = []
     http_calls = 0
     http_response = object()
     model = WebsocketResponsesModel(
@@ -807,9 +828,20 @@ async def test_websocket_model_retries_recoverable_connect_errors_before_http_fa
         websocket_retry_options=ModelRequestRetryOptions(attempts=3, max_wait_seconds=0),
     )
 
+    async def build_websocket_payload(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal payload_builds
+        payload_builds += 1
+        return {
+            "type": "response.create",
+            "instructions": "stable instructions",
+            "input": [{"role": "user", "content": "stable input"}],
+            "prompt_cache_key": "session-1",
+        }
+
     async def create_websocket_stream(*args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal attempts
         attempts += 1
+        attempted_payloads.append(kwargs["payload"])
         raise TimeoutError("temporary connect timeout")
 
     @asynccontextmanager
@@ -818,6 +850,7 @@ async def test_websocket_model_retries_recoverable_connect_errors_before_http_fa
         http_calls += 1
         yield http_response
 
+    monkeypatch.setattr(model, "_build_websocket_payload", build_websocket_payload)
     monkeypatch.setattr(model, "_create_websocket_stream", create_websocket_stream)
     monkeypatch.setattr(model, "_request_stream_http", request_stream_http)
 
@@ -825,8 +858,109 @@ async def test_websocket_model_retries_recoverable_connect_errors_before_http_fa
         assert response is http_response
 
     assert attempts == 3
+    assert payload_builds == 1
+    assert len(attempted_payloads) == 3
+    assert attempted_payloads[0] is attempted_payloads[1] is attempted_payloads[2]
     assert http_calls == 1
     assert model.websocket_fallback_state.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_model_logs_handshake_retry_without_sending_payload(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self._messages = iter([
+                json.dumps({
+                    "type": "response.created",
+                    "sequence_number": 0,
+                    "response": {
+                        "id": "resp_retry_success",
+                        "created_at": 1,
+                        "model": "gpt-5.5",
+                        "object": "response",
+                        "output": [],
+                        "parallel_tool_calls": True,
+                        "tool_choice": "auto",
+                        "tools": [],
+                        "status": "in_progress",
+                    },
+                }),
+            ])
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            return self
+
+        async def __anext__(self) -> str:
+            try:
+                return next(self._messages)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            pass
+
+    payload = {
+        "type": "response.create",
+        "instructions": "stable instructions",
+        "input": [{"role": "user", "content": "stable input"}],
+        "prompt_cache_key": "session-1",
+    }
+    connection = FakeConnection()
+    streams: list[_WebsocketResponseStream] = []
+    attempts = 0
+    model = WebsocketResponsesModel(
+        "gpt-5",
+        provider=OpenAIProvider(api_key="test-key"),
+        websocket_open_timeout=7.5,
+        websocket_retry_options=ModelRequestRetryOptions(attempts=2, max_wait_seconds=0),
+    )
+
+    async def create_stream() -> _WebsocketResponseStream:
+        nonlocal attempts
+        attempts += 1
+
+        async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if attempts == 1:
+                raise TimeoutError("timed out during opening handshake")
+            return connection
+
+        stream = _WebsocketResponseStream(
+            url="wss://example.test/responses",
+            headers={},
+            payload=payload,
+            open_timeout=7.5,
+            connect=connect,
+        )
+        streams.append(stream)
+        return stream
+
+    with caplog.at_level(logging.WARNING, logger="ya_agent_sdk.agents.models.websocket"):
+        stream, _response = await model._create_websocket_response_with_retry(
+            create_stream,
+            {},  # type: ignore[arg-type]
+            ModelRequestParameters(),
+        )
+    await stream.__aexit__(None, None, None)
+
+    assert attempts == 2
+    assert streams[0].websocket_upgraded is False
+    assert streams[0].create_sent is False
+    assert streams[1].request_fingerprint == streams[0].request_fingerprint
+    assert connection.sent == [
+        json.dumps(payload, separators=(",", ":")),
+        '{"type":"response.cancel","response_id":"resp_retry_success"}',
+    ]
+    assert "stage=opening_handshake" in caplog.text
+    assert "attempt=1/2" in caplog.text
+    assert "open_timeout_seconds=7.500" in caplog.text
+    assert f"request_fingerprint={streams[0].request_fingerprint}" in caplog.text
+    assert "create_sent=False" in caplog.text
 
 
 @pytest.mark.asyncio

@@ -68,7 +68,9 @@ Transport mode is controlled by `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE`:
 | `websocket` | Force WebSocket and surface WebSocket errors                                          |
 | `http`      | Use the standard HTTP Responses transport                                             |
 
-The OAuth Codex provider reuses this SDK transport and only supplies Codex-specific bearer/account headers, beta header, and payload normalization.
+The OAuth Codex provider reuses this SDK transport and only supplies Codex-specific bearer/account headers, beta header, and payload normalization. The opening handshake defaults to 10 seconds; configure `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_OPEN_TIMEOUT_SECONDS` with a positive finite number when a slower proxy path needs more time.
+
+Pre-stream connection retries reuse one prepared `response.create` payload, keeping `instructions`, `input`, tools, and `prompt_cache_key` identical across attempts. Retry warnings include `stage`, `attempt`, `open_timeout_seconds`, a content-safe `request_fingerprint`, `create_sent`, and `events_seen`. `stage=opening_handshake create_sent=False` means no model payload was submitted; failures after `create_sent=True` may have reached the provider.
 
 ## OpenAI Responses Presets
 
