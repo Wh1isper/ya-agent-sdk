@@ -220,6 +220,33 @@ x-client-request-id: <thread_id>
 
 `X-OpenAI-Fedramp` is attached only when the account metadata carries `chatgpt_account_is_fedramp = true`. The provider intentionally omits Codex's `version` header by default so YA package versions are not treated as Codex CLI release versions.
 
+OAuth Codex requests additionally project backend-routing headers from the effective
+request:
+
+```http
+x-codex-routing-hint: model=<model>
+x-codex-routing-hint: model=<model>;tier=<service-tier>
+```
+
+The tier suffix is present only when `openai_service_tier` or the unified
+`service_tier` setting is selected. This projection is specific to the ChatGPT/Codex
+OAuth backend and is not applied to generic OpenAI Responses models.
+
+## Turn State
+
+The OAuth Codex model owns a first-write-wins `x-codex-turn-state` cell for each
+Pydantic AI run ID. The first value can arrive in an HTTP streaming response header,
+a WebSocket upgrade response header, or a WebSocket `response.metadata.headers`
+event. Later values in the same run cannot replace it, and a different run ID starts
+without state.
+
+Subsequent HTTP requests in the same run send the value as the
+`x-codex-turn-state` header. Subsequent WebSocket `response.create` messages send it
+as `client_metadata["x-codex-turn-state"]`, matching the current Codex WebSocket
+protocol. WebSocket-to-HTTP fallback shares the same run-scoped cell. Generic
+`openai-responses:*` and `openai-responses-ws:*` models do not implement this OAuth
+backend contract.
+
 ## SDK Session Headers
 
 `AgentContext.get_model_extra_headers()` returns a stable header set. YA Claw passes `provider_session_id` and `provider_thread_id` through `context_kwargs`; YAACLI uses the context `run_id` fallback.
