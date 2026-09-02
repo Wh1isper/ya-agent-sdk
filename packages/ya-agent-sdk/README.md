@@ -73,7 +73,9 @@ runtime = create_agent("openai-responses-ws:gpt-5.5")
 # runtime = create_agent("openai-responses-rs:gpt-5.5")
 ```
 
-Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization. WebSocket application error codes are classified as transport failures rather than HTTP statuses; when stream recovery is enabled, transient timeout codes such as `1101` reach the independent transport resume budget.
+Set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_MODE` to `auto`, `websocket`, or `http` to control the transport. The opening handshake defaults to 10 seconds; set `YA_AGENT_OPENAI_RESPONSES_WEBSOCKET_OPEN_TIMEOUT_SECONDS` to a positive finite number to change it for direct, gateway, and OAuth Codex WebSocket models. The OAuth Codex provider reuses this SDK transport and only adds Codex-specific headers and payload normalization. WebSocket application error codes are classified as transport failures rather than HTTP statuses; when stream recovery is enabled, transient timeout codes such as `1101` reach the independent transport resume budget.
+
+A pre-stream retry prepares one `response.create` payload and reuses it for every connection attempt, so `instructions`, `input`, tools, and `prompt_cache_key` cannot drift between those attempts. Retry warnings report the failure stage, attempt budget, opening timeout, a content-safe request fingerprint, whether `response.create` was sent, and the number of response events seen. An `opening_handshake` failure with `create_sent=False` did not submit a model request; a failure after `create_sent=True` may have reached the provider and should be treated as an ambiguous replay boundary.
 
 GPT-5.6 supports independent reasoning effort and reasoning mode controls. Use `openai_responses_pro` for `pro` mode with balanced `medium` effort:
 
