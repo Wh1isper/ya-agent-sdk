@@ -5,16 +5,25 @@ import json
 import anyio
 import httpx2
 import pytest
+from openai import AsyncOpenAI
+from pydantic_ai import RunContext
 from pydantic_ai.exceptions import UserError
+from pydantic_ai.models import ModelRequestParameters
+from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import RunUsage
 from ya_oauth.types import OAuthAccount, TokenSnapshot
 from ya_oauth_provider.codex import (
     CodexResponsesModel,
     CodexWebsocketResponsesModel,
+    _CodexRequestHeaders,
+    _CodexWebsocketResponseStream,
     build_codex_model,
     build_session_headers,
     normalize_codex_responses_payload,
 )
 from ya_oauth_provider.http import (
+    CODEX_ROUTING_HINT_HEADER,
+    CODEX_TURN_STATE_HEADER,
     CODEX_WEBSOCKET_BETA,
     OAuthBearerAuth,
     build_codex_headers,
@@ -23,6 +32,28 @@ from ya_oauth_provider.http import (
 
 ACCESS_TOKEN_OLD = "fixture-access-token-old"  # noqa: S105
 ACCESS_TOKEN_NEW = "fixture-access-token-new"  # noqa: S105
+
+
+def _response(status: str) -> dict[str, object]:
+    return {
+        "id": "resp_1",
+        "created_at": 1,
+        "model": "gpt-5.5",
+        "object": "response",
+        "output": [],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "status": status,
+    }
+
+
+def _responses_sse() -> str:
+    events = [
+        {"type": "response.created", "sequence_number": 0, "response": _response("in_progress")},
+        {"type": "response.completed", "sequence_number": 1, "response": _response("completed")},
+    ]
+    return "".join(f"data: {json.dumps(event)}\n\n" for event in events)
 
 
 class FakeTokenSource:
@@ -96,6 +127,213 @@ def test_build_codex_model_can_force_http() -> None:
 
     assert isinstance(model, CodexResponsesModel)
     assert not isinstance(model, CodexWebsocketResponsesModel)
+
+
+@pytest.mark.asyncio
+async def test_codex_http_round_trips_turn_state_and_builds_routing_hint() -> None:
+    request_headers: list[httpx2.Headers] = []
+    response_states = iter(("turn-one", "ignored-replacement", "turn-two"))
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        request_headers.append(request.headers)
+        return httpx2.Response(
+            200,
+            request=request,
+            headers={
+                "content-type": "text/event-stream",
+                CODEX_TURN_STATE_HEADER: next(response_states),
+            },
+            content=_responses_sse(),
+        )
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(handler)) as http_client:
+        model = CodexResponsesModel(
+            "gpt-5.5",
+            provider=OpenAIProvider(
+                openai_client=AsyncOpenAI(api_key="test-key", http_client=http_client),
+            ),
+        )
+        usage_by_run = {"run-one": RunUsage(), "run-two": RunUsage()}
+        for run_id in ("run-one", "run-one", "run-two"):
+            run_context = RunContext(
+                deps=object(),
+                model=model,
+                usage=usage_by_run[run_id],
+                run_id=run_id,
+            )
+            async with model.request_stream(
+                [],
+                {
+                    "openai_service_tier": "priority",
+                    "extra_headers": {
+                        "X-Codex-Turn-State": "caller-stale-state",
+                        "X-Codex-Routing-Hint": "caller-stale-hint",
+                    },
+                },
+                ModelRequestParameters(),
+                run_context,
+            ) as response:
+                async for _event in response:
+                    pass
+
+    assert CODEX_TURN_STATE_HEADER not in request_headers[0]
+    assert request_headers[0][CODEX_ROUTING_HINT_HEADER] == "model=gpt-5.5;tier=priority"
+    assert request_headers[1][CODEX_TURN_STATE_HEADER] == "turn-one"
+    assert request_headers[1][CODEX_ROUTING_HINT_HEADER] == "model=gpt-5.5;tier=priority"
+    assert CODEX_TURN_STATE_HEADER not in request_headers[2]
+
+
+def test_codex_turn_state_accepts_header_array_and_resets_for_reused_run_id() -> None:
+    request_headers = _CodexRequestHeaders("gpt-5.5")
+    first_context = RunContext(
+        deps=object(),
+        model=None,  # type: ignore[arg-type]
+        usage=RunUsage(),
+        run_id="run-one",
+    )
+    with request_headers.scope(first_context):
+        request_headers.capture({CODEX_TURN_STATE_HEADER: ["array-state", "ignored"]})
+        first_settings = request_headers.apply({})
+
+    reused_context = RunContext(
+        deps=object(),
+        model=None,  # type: ignore[arg-type]
+        usage=RunUsage(),
+        run_id="run-one",
+    )
+    with request_headers.scope(reused_context):
+        reused_settings = request_headers.apply({})
+
+    assert first_settings["extra_headers"][CODEX_TURN_STATE_HEADER] == "array-state"
+    assert CODEX_TURN_STATE_HEADER not in reused_settings["extra_headers"]
+
+
+@pytest.mark.asyncio
+async def test_codex_websocket_captures_handshake_state_before_send_failure() -> None:
+    request_headers = _CodexRequestHeaders("gpt-5.5")
+    run_context = RunContext(
+        deps=object(),
+        model=None,  # type: ignore[arg-type]
+        usage=RunUsage(),
+        run_id="run-one",
+    )
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.headers = {CODEX_TURN_STATE_HEADER: "handshake-state"}
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.response = FakeResponse()
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            async def messages():  # type: ignore[no-untyped-def]
+                if False:
+                    yield ""
+
+            return messages()
+
+        async def send(self, message: str) -> None:
+            raise OSError("send failed")
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            pass
+
+    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return FakeConnection()
+
+    stream = _CodexWebsocketResponseStream(
+        url="wss://example.test/responses",
+        headers={},
+        payload={"type": "response.create"},
+        connect=connect,
+        request_headers=request_headers,
+    )
+    with request_headers.scope(run_context):
+        with pytest.raises(OSError, match="send failed"):
+            await stream.__aenter__()
+        fallback_settings = request_headers.apply({})
+
+    assert fallback_settings["extra_headers"][CODEX_TURN_STATE_HEADER] == "handshake-state"
+
+
+@pytest.mark.parametrize(
+    ("handshake_state", "expected_state"),
+    [(None, "websocket-state"), ("handshake-state", "handshake-state")],
+)
+@pytest.mark.asyncio
+async def test_codex_websocket_round_trips_turn_state_and_builds_routing_hint(
+    handshake_state: str | None,
+    expected_state: str,
+) -> None:
+    model = build_codex_model("gpt-5.5", token_source=FakeTokenSource())
+    assert isinstance(model, CodexWebsocketResponsesModel)
+    run_context = RunContext(
+        deps=object(),
+        model=model,
+        usage=RunUsage(),
+        run_id="run-one",
+    )
+
+    class FakeResponse:
+        def __init__(self, state: str) -> None:
+            self.headers = {CODEX_TURN_STATE_HEADER: state}
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.response = FakeResponse(handshake_state) if handshake_state is not None else None
+            self.sent: list[str] = []
+
+        def __aiter__(self):  # type: ignore[no-untyped-def]
+            async def messages():  # type: ignore[no-untyped-def]
+                yield json.dumps({
+                    "type": "response.metadata",
+                    "headers": {"X-Codex-Turn-State": "websocket-state"},
+                })
+
+            return messages()
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            pass
+
+    async def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        return FakeConnection()
+
+    settings = {
+        "service_tier": "flex",
+        "extra_headers": {
+            "X-Codex-Turn-State": "caller-stale-state",
+            "X-Codex-Routing-Hint": "caller-stale-hint",
+        },
+    }
+    with model._codex_request_headers.scope(run_context):
+        first_stream = await model._create_websocket_stream(
+            [],
+            settings,  # type: ignore[arg-type]
+            ModelRequestParameters(),
+            payload={"type": "response.create"},
+        )
+        first_stream._connect = connect
+        assert CODEX_TURN_STATE_HEADER not in first_stream.headers
+        assert first_stream.headers[CODEX_ROUTING_HINT_HEADER] == "model=gpt-5.5;tier=flex"
+        async with first_stream:
+            async for _event in first_stream:
+                pass
+
+    with model._codex_request_headers.scope(run_context):
+        second_stream = await model._create_websocket_stream(
+            [],
+            settings,  # type: ignore[arg-type]
+            ModelRequestParameters(),
+            payload={"type": "response.create"},
+        )
+
+    assert CODEX_TURN_STATE_HEADER not in second_stream.headers
+    assert second_stream.payload["client_metadata"] == {CODEX_TURN_STATE_HEADER: expected_state}
+    assert second_stream.headers[CODEX_ROUTING_HINT_HEADER] == "model=gpt-5.5;tier=flex"
 
 
 @pytest.mark.asyncio

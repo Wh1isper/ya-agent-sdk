@@ -16,6 +16,9 @@ _OAUTH_MANAGED_HEADERS = (
     "originator",
 )
 
+CODEX_ROUTING_HINT_HEADER = "x-codex-routing-hint"
+CODEX_TURN_STATE_HEADER = "x-codex-turn-state"
+
 _RESERVED_EXTRA_HEADERS = {
     "authorization",
     "proxy-authorization",
@@ -43,6 +46,8 @@ class OAuthBearerAuth(httpx2.Auth):
         self.token_source = token_source
         self.provider_name = provider_name
         self.extra_headers = _safe_extra_headers(extra_headers)
+        if provider_name == "codex":
+            self.extra_headers = _without_codex_dynamic_headers(self.extra_headers)
 
     async def async_auth_flow(self, request: httpx2.Request) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         # Buffer once so Codex payload normalization and a possible 401 replay see
@@ -119,6 +124,14 @@ async def build_codex_websocket_headers(
     headers = build_oauth_headers(snapshot, provider_name="codex", extra_headers=extra_headers)
     headers.setdefault("User-Agent", get_user_agent())
     return headers
+
+
+def _without_codex_dynamic_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in {CODEX_ROUTING_HINT_HEADER, CODEX_TURN_STATE_HEADER}
+    }
 
 
 def _safe_extra_headers(extra_headers: Mapping[str, str] | None) -> dict[str, str]:
