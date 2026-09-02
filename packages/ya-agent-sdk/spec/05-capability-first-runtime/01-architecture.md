@@ -336,6 +336,7 @@ class AgentContributionGroup:
     source_id: str
     capabilities: tuple[object, ...] = ()
 
+
 def get_agent_contributions(self) -> list[AgentContributionGroup]: ...
 ```
 

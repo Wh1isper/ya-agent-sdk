@@ -63,9 +63,7 @@ from ya_agent_sdk.capabilities import load_capability_plugins
 from ya_agent_sdk.context import AgentContext
 
 plugins = load_capability_plugins(Path("/etc/my-agent/plugins.toml"))
-root_spec = plugins.apply_to_root_agent_spec(
-    AgentSpec.from_dict({"name": "my-agent"})
-)
+root_spec = plugins.apply_to_root_agent_spec(AgentSpec.from_dict({"name": "my-agent"}))
 validate_agent_spec_capabilities(
     root_spec,
     deps_type=AgentContext,

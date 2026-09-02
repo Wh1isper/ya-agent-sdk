@@ -30,6 +30,7 @@ class EnqueueReceipt:
     disposition: InputDisposition
     enqueue_id: str | None = None
 
+
 async def enqueue(
     self,
     *content: EnqueueContent,
@@ -201,6 +202,7 @@ uses normal session submission and a queued `RunRecord`.
 class SteerMode(StrEnum):
     STEER = "steer"
     QUEUE = "queue"
+
 
 class SteerRequest(BaseModel):
     input_parts: list[InputPart] = Field(default_factory=list)

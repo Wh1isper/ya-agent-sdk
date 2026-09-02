@@ -75,39 +75,35 @@ researcher = resolver.resolve(
     SubagentSpec(
         route="researcher",
         execution_modes=(SubagentExecutionMode.foreground,),
-        agent=AgentSpec.from_dict(
-            {
-                "name": "researcher",
-                "description": "Research a bounded question and return sources",
-                "instructions": "Return concise sourced findings and uncertainties.",
-                "capabilities": [
-                    {"RuntimeFoundationCapability": {}},
-                    {"WebSearchCapability": {}},
-                    {"WebContentCapability": {}},
-                    {"ToolObservationCapability": {}},
-                    {"ToolTimeoutCapability": {}},
-                ],
-            }
-        ),
+        agent=AgentSpec.from_dict({
+            "name": "researcher",
+            "description": "Research a bounded question and return sources",
+            "instructions": "Return concise sourced findings and uncertainties.",
+            "capabilities": [
+                {"RuntimeFoundationCapability": {}},
+                {"WebSearchCapability": {}},
+                {"WebContentCapability": {}},
+                {"ToolObservationCapability": {}},
+                {"ToolTimeoutCapability": {}},
+            ],
+        }),
     )
 )
 
 self_plan = resolver.resolve_self(
     SelfForkPolicy(
-        agent=AgentSpec.from_dict(
-            {
-                "name": "self",
-                "description": "Fork the parent for a bounded independent task",
-                "model": model,
-                "instructions": "Work independently and report concise findings.",
-                "capabilities": [
-                    {"RuntimeFoundationCapability": {}},
-                    {"FilesystemCapability": {"writable": False}},
-                    {"ToolObservationCapability": {}},
-                    {"ToolTimeoutCapability": {}},
-                ],
-            }
-        ),
+        agent=AgentSpec.from_dict({
+            "name": "self",
+            "description": "Fork the parent for a bounded independent task",
+            "model": model,
+            "instructions": "Work independently and report concise findings.",
+            "capabilities": [
+                {"RuntimeFoundationCapability": {}},
+                {"FilesystemCapability": {"writable": False}},
+                {"ToolObservationCapability": {}},
+                {"ToolTimeoutCapability": {}},
+            ],
+        }),
         history_message_limit=50,
         execution_modes=(SubagentExecutionMode.foreground,),
     )
@@ -209,21 +205,15 @@ preserved and remains authoritative.
 Use Pydantic AI capability specifications inside `AgentSpec`:
 
 ```python
-AgentSpec.from_dict(
-    {
-        "name": "reviewer",
-        "model": "openai-chat:gpt-4o",
-        "capabilities": [
-            {"RuntimeFoundationCapability": {}},
-            {"FilesystemCapability": {"writable": False}},
-            {
-                "ToolVisibilityCapability": {
-                    "allow": ["glob", "grep", "ls", "view"]
-                }
-            },
-        ],
-    }
-)
+AgentSpec.from_dict({
+    "name": "reviewer",
+    "model": "openai-chat:gpt-4o",
+    "capabilities": [
+        {"RuntimeFoundationCapability": {}},
+        {"FilesystemCapability": {"writable": False}},
+        {"ToolVisibilityCapability": {"allow": ["glob", "grep", "ls", "view"]}},
+    ],
+})
 ```
 
 SDK built-ins come from `build_default_capability_catalog()`. Selected custom types

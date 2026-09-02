@@ -10,13 +10,16 @@ Bundle related tools and guidance in a native `Capability`, give it a useful des
 from pydantic_ai.capabilities import Capability, ToolSearch
 from ya_agent_sdk.agents.main import create_agent
 
+
 async def search_papers(query: str) -> str:
     """Search academic papers."""
     ...
 
+
 async def read_paper(paper_id: str) -> str:
     """Read one academic paper."""
     ...
+
 
 papers = Capability(
     id="papers",

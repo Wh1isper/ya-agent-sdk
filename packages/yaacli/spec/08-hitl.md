@@ -14,7 +14,7 @@ coordinator owns process execution.
 `create_tui_runtime()` configures:
 
 ```python
-output_type=[str, DeferredToolRequests]
+output_type = [str, DeferredToolRequests]
 ```
 
 Current host policy comes from existing YAACLI configuration inputs:

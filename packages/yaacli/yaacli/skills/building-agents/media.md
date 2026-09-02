@@ -33,6 +33,7 @@ The `MediaUploader` protocol defines the interface for media upload services:
 ```python
 from ya_agent_sdk.media import MediaUploader
 
+
 class MediaUploader(Protocol):
     async def upload(self, data: bytes, media_type: str) -> str:
         """Upload media data and return public URL."""
@@ -170,7 +171,7 @@ agent = Agent(
     deps_type=AgentContext,
     capabilities=[
         ProcessHistory(drop_extra_images),  # First: limit/compress images
-        ProcessHistory(media_filter),       # Then: upload to S3
+        ProcessHistory(media_filter),  # Then: upload to S3
     ],
 )
 ```
@@ -203,11 +204,11 @@ model_cfg = ModelConfig(
 The media upload filter should run AFTER image processing filters:
 
 ```python
-capabilities=[
-    ProcessHistory(drop_extra_images),     # 1. Limit number of images
-    ProcessHistory(drop_gif_images),       # 2. Remove unsupported formats
+capabilities = [
+    ProcessHistory(drop_extra_images),  # 1. Limit number of images
+    ProcessHistory(drop_gif_images),  # 2. Remove unsupported formats
     # ... other image processing ...
-    ProcessHistory(media_filter),          # 3. Upload processed images
+    ProcessHistory(media_filter),  # 3. Upload processed images
 ]
 ```
 
@@ -236,6 +237,7 @@ from uuid import uuid4
 
 from ya_agent_sdk.media import MediaUploader
 
+
 class LocalFileUploader:
     """Upload to local filesystem with public URL."""
 
@@ -250,6 +252,7 @@ class LocalFileUploader:
         path = self.base_dir / filename
         path.write_bytes(data)
         return f"{self.base_url}/{filename}"
+
 
 # Usage
 uploader = LocalFileUploader(Path("/var/www/media"), "https://example.com/media")
