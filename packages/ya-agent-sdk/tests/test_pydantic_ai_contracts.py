@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 import pytest
 from pydantic_ai import Agent, AgentSpec, RunContext
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import UserError
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, UserPromptPart
 from pydantic_ai.models import ModelRequestContext
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_graph import End
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 
 
 @dataclass
@@ -138,6 +141,31 @@ async def test_native_enqueue_applies_structured_input_before_terminal() -> None
 
     assert enqueue_id is not None
     assert user_content == ["first", "second"]
+
+
+async def test_runtime_context_is_persisted_for_cache_stable_history() -> None:
+    wire_requests: list[list[ModelMessage]] = []
+
+    def model_function(messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+        wire_requests.append(copy.deepcopy(messages))
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    runtime = create_agent(
+        FunctionModel(model_function),
+        capabilities=[RuntimeFoundationCapability()],
+    )
+    async with runtime:
+        first = await runtime.agent.run("first", deps=runtime.ctx)
+        first_history = first.all_messages()
+        await runtime.agent.run("second", deps=runtime.ctx, message_history=first_history)
+
+    first_user_parts = [
+        part.content
+        for part in first_history[0].parts
+        if isinstance(part, UserPromptPart) and isinstance(part.content, str)
+    ]
+    assert any("<runtime-context>" in content for content in first_user_parts)
+    assert wire_requests[1][0].parts[:2] == wire_requests[0][0].parts[:2]
 
 
 async def test_create_agent_preserves_native_spec_name_without_override() -> None:

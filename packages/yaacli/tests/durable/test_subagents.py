@@ -150,6 +150,9 @@ def test_local_subagent_materializes_explicitly_disabled_child_recovery() -> Non
     assert policy.max_attempts == 7
     assert policy.transport_max_attempts == 11
     assert policy.resume_prompt == "root resume prompt"
+    assert child_ctx.run_id == "child"
+    assert child_ctx.provider_session_id == "session"
+    assert child_ctx.provider_thread_id == "child"
 
 
 async def test_file_subagent_store_creates_no_lock_files(tmp_path: Path) -> None:

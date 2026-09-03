@@ -44,6 +44,22 @@ async def apply_history_processor(
     return copy_request_context(request_context, messages=processed)
 
 
+async def persist_history_projection(
+    processor: HistoryProcessor[DepsT],
+    ctx: RunContext[DepsT],
+    request_context: ModelRequestContext,
+    handler: Callable[[ModelRequestContext], Awaitable[Any]],
+) -> Any:
+    """Apply a processor to canonical history so future requests replay the same prefix."""
+    messages = request_context.messages
+    processed = processor(ctx, messages)
+    if inspect.isawaitable(processed):
+        processed = await processed
+    if processed is not messages:
+        messages[:] = processed
+    return await handler(request_context)
+
+
 async def project_history(
     processor: HistoryProcessor[DepsT],
     ctx: RunContext[DepsT],

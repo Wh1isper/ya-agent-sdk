@@ -249,7 +249,19 @@ backend contract.
 
 ## SDK Session Headers
 
-`AgentContext.get_model_extra_headers()` returns a stable header set. YA Claw passes `provider_session_id` and `provider_thread_id` through `context_kwargs`; YAACLI uses the context `run_id` fallback.
+`AgentContext.get_model_extra_headers()` returns the provider session and thread headers
+for the active execution context. Durable hosts bind these identities explicitly:
+YAACLI uses its durable `session_id` for the provider session and root thread, while YA
+Claw passes `provider_session_id` and `provider_thread_id` through `context_kwargs`.
+YAACLI child executions share the durable session and use their root child execution ID
+as the provider thread.
+
+For context-header transports, request model settings are derived from the active
+`RunContext` on every model call rather than frozen when `create_agent()` constructs a
+reusable runtime. All provider session/thread header aliases are replaced together. If
+the model configuration declares `ModelFeature.openai_prompt_cache_key`, the same step
+binds `openai_prompt_cache_key` to the current `x-session-id` and removes a conflicting
+request-body `prompt_cache_key`.
 
 ## Implementation Order
 

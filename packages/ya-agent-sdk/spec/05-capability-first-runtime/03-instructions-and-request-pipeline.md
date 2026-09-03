@@ -60,28 +60,33 @@ A `DynamicCapability` factory remains deterministic from run dependencies. I/O o
 through the capability's cache/toolset boundary rather than a durable-flow capability
 factory.
 
-### 2.3 Transient request envelope
+### 2.3 Request projections and canonical context snapshots
 
-Pydantic AI 2.21 writes the messages returned from `before_model_request` back to
-canonical `message_history`. That hook is reserved for transformations intentionally
-persisted in history.
-
-Transient data is added by request-only `wrap_model_request` decorators:
+Pydantic AI 2.21 exposes canonical messages through `wrap_model_request`. Runtime and
+Environment context processors intentionally mutate those messages before the model is
+called so each generated snapshot becomes part of canonical history:
 
 - elapsed time and usage;
 - context-window pressure and reminders;
 - Environment paths and shell configuration;
 - active process status summaries;
-- active agent/subagent summaries;
-- a bounded note-key index on user prompts;
+- active agent/subagent summaries; and
+- a bounded note-key index on user prompts.
+
+Each later model request replays prior snapshots byte-for-byte and adds a fresh snapshot
+to only the current `ModelRequest`. This preserves the provider's common prompt prefix;
+projecting context into a request-only copy would make the next request omit the prior
+snapshot and reduce cache reuse to the system prompt and tool schema.
+
+Only one-shot or provider-compatibility transformations remain request-only:
+
 - one-shot file inspection reminders; and
 - provider-specific media projection.
 
-A decorator creates replacement messages and a replacement `ModelRequestContext`,
-passes them only to `handler()`, and leaves the original request context untouched.
-The replacement preserves every field not intentionally changed, including Pydantic
-AI runtime-managed `model_id` and `streaming` fields. The decorated messages are never
-assigned to graph state.
+A request-only decorator creates replacement messages and a replacement
+`ModelRequestContext`, passes them only to `handler()`, and leaves canonical history
+untouched. The replacement preserves every field not intentionally changed, including
+Pydantic AI runtime-managed `model_id` and `streaming` fields.
 
 A one-shot source is cleared only after `handler()` returns a model response. If the
 handler raises, the source remains pending for recovery/retry.
@@ -93,9 +98,10 @@ UTF-8 bytes and reports `total`, `shown`, and `omitted` counts. The model uses `
 to discover omitted keys or read values. Tool-response and retry requests omit the
 index.
 
-Compaction still strips request-envelope runtime context from canonical history. When
-notes exist, both compact implementations explicitly receive the same bounded key index
-in the compact prompt. The nested cache-friendly compact request suppresses the ordinary
+Compaction strips historical runtime and Environment snapshots from canonical history;
+the processors add fresh snapshots to the compacted continuation request. When notes
+exist, both compact implementations explicitly receive the same bounded key index in
+the compact prompt. The nested cache-friendly compact request suppresses the ordinary
 runtime note index so the model sees one copy. Durable note values remain outside the
 summary. The compact model may add an optional `Relevant Note Keys` section containing
 exact supplied keys and a short continuation reason; it omits that section when no

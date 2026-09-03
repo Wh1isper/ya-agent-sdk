@@ -333,7 +333,8 @@ class LocalSubagentDriver:
             resume_prompt_factory=(inherited_policy.resume_prompt_factory if inherited_policy is not None else None),
         )
         child_ctx.parent_run_id = record.parent_logical_run_id
-        child_ctx.provider_session_id = record.execution_id
+        child_ctx.run_id = record.root_execution_id
+        child_ctx.provider_session_id = record.owner_scope_id
         child_ctx.provider_thread_id = record.root_execution_id
         child_ctx.runtime_descriptor_id = record.parent_runtime_descriptor_id
         child_ctx.durable_logical_run_id = record.child_logical_run_id
