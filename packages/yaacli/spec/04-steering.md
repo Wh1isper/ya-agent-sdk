@@ -110,10 +110,14 @@ renders their content and does not maintain another queue. After durable accepta
 `> ...` ordinary-input treatment. The receipt stores only its derived projection key,
 not the raw guidance, which remains in the durable input row. This is the visible
 receive boundary and does not claim that the model has seen the guidance.
-When native application is confirmed, the transcript emits one bounded, single-line
-`Guidance injected` display projection. Together these form the receive/application
-event pair. Replay stores only user-visible content, sanitized applied previews, and a
-derived projection digest; raw durable input IDs and native enqueue IDs remain private.
+When native application is confirmed, the transcript emits a bounded `Guidance injected`
+display projection. Adjacent inputs applied at the same graph boundary keep distinct
+durable events but merge into one visible block with at most eight single-line previews.
+If terminal recovery supplies a missing application fact, it is inserted beside the
+matching acceptance receipt instead of at the end of replay. Together these form the
+receive/application event pair. Replay stores only user-visible content, sanitized
+applied previews, and a derived projection digest; raw durable input IDs and native
+enqueue IDs remain private.
 
 ## Input Routing
 

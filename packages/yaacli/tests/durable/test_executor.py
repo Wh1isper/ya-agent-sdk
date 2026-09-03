@@ -13,8 +13,11 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, RetryPromptPart, To
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.context import ResumableState
 from ya_agent_sdk.execution import AgentSegment
+from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
 from yaacli.durable.application import SessionApplicationService
 from yaacli.durable.bindings import runtime_bindings
 from yaacli.durable.capabilities import DurableInboxPumpCapability
@@ -23,6 +26,7 @@ from yaacli.durable.models import InputState, LogicalRunStatus
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.session import TUIContext
+from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY
 
 
 def _runtime_spec(
@@ -135,9 +139,43 @@ async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path
         assert store.list_inputs(run.logical_run_id)[0].state is InputState.applied
         assert store.get_execution_checkpoint(run.execution_id) is None
         assert store.read_events(session.session_id)[-1].event_type == "RUN_FINISHED"
+        session_usage = UsageSnapshot.model_validate(revision.usage[SESSION_USAGE_SNAPSHOT_REVISION_KEY])
+        assert session_usage.total_usage.requests == 1
+        assert "session_usage_snapshot" not in revision.resumable_state
+        ResumableState.model_validate(revision.resumable_state)
         persisted = store.get_session(session.session_id)
         assert persisted is not None
         assert persisted.head_revision_id == revision.revision_id
+    finally:
+        await worker.close()
+        store.close()
+
+
+async def test_revision_payload_persists_session_usage_outside_portable_state(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    worker = await _create_worker(store, tmp_path, _runtime_spec(tmp_path, TestModel()))
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="usage-session")
+        run = service.accept_turn(session.session_id, ["hello"], idempotency_key="usage-turn")
+        usage = RunUsage(input_tokens=1_000, output_tokens=250, cache_read_tokens=800)
+        snapshot = UsageSnapshot(
+            run_id="session:usage-session",
+            total_usage=usage,
+            agent_usages={
+                "main": UsageAgentTotal(agent_name="main", model_id="model-a", usage=usage),
+            },
+            model_usages={"model-a": usage},
+        )
+        context = TUIContext(session_usage_snapshot=snapshot)
+
+        payload = worker.coordinator._revision_payload(context, run, [], RunUsage(requests=1), {})
+
+        restored_snapshot = UsageSnapshot.model_validate(payload.usage[SESSION_USAGE_SNAPSHOT_REVISION_KEY])
+        assert restored_snapshot.total_usage == usage
+        assert payload.usage["requests"] == 1
+        assert "session_usage_snapshot" not in payload.resumable_state
+        ResumableState.model_validate(payload.resumable_state)
     finally:
         await worker.close()
         store.close()

@@ -36,6 +36,7 @@ from ya_agent_sdk.subagents import (
 )
 from yaacli.durable.models import InputState, SessionStatus
 from yaacli.durable.sqlite import SQLiteSessionStore
+from yaacli.durable.state_files import SessionStateFiles
 from yaacli.durable.store import TombstonedSessionError
 from yaacli.durable.subagents import (
     DurableSubagentInboxCapability,
@@ -787,6 +788,83 @@ async def test_subagent_store_retains_exact_descriptors_for_terminal_records(
     finally:
         await reopened.close()
         product_store.close()
+
+
+def test_descriptor_registration_indexes_retained_state_once(tmp_path: Path) -> None:
+    database_path = tmp_path / "descriptor-index.sqlite3"
+    with SQLiteSessionStore(database_path):
+        store = FileSubagentExecutionStore(database_path)
+        resolver = SubagentPlanResolver(
+            build_default_capability_catalog(),
+            default_model="test",
+            restart_durable=False,
+        )
+        plans = [
+            resolver.resolve(
+                SubagentSpec(
+                    route=route,
+                    agent=AgentSpec(name=route, model="test"),
+                    durability=SubagentDurability.process,
+                )
+            )
+            for route in ("worker-a", "worker-b")
+        ]
+        store.state_files.list_subagents = MagicMock(return_value=())  # type: ignore[method-assign]
+
+        for plan in plans:
+            store.put_descriptor(plan)
+
+        store.state_files.list_subagents.assert_called_once_with()
+
+
+def test_session_scoped_subagent_listing_does_not_scan_all_session_markers(tmp_path: Path) -> None:
+    database_path = tmp_path / "session-scope.sqlite3"
+    with SQLiteSessionStore(database_path) as product_store:
+        product_store.create_session(str(tmp_path), session_id="session-a")
+        product_store.create_session(str(tmp_path), session_id="session-b")
+        state_files = SessionStateFiles(database_path)
+        state_files.list_managed_session_ids = MagicMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("global session scan")
+        )
+
+        assert state_files.list_subagents("session-a") == ()
+
+
+async def test_session_scoped_subagent_listing_reuses_unchanged_parsed_state(tmp_path: Path) -> None:
+    database_path = tmp_path / "subagent-cache.sqlite3"
+    product_store = SQLiteSessionStore(database_path)
+    product_store.create_session(str(tmp_path), session_id="session")
+    store = FileSubagentExecutionStore(database_path)
+    plan = _put_worker_descriptor(store)
+    record = SubagentExecutionRecord(
+        root_execution_id="execution",
+        execution_id="execution",
+        owner_scope_id="session",
+        idempotency_key="execution",
+        descriptor_id=plan.descriptor_id,
+        plan_fingerprint=plan.fingerprint,
+        route="worker",
+        mode=SubagentExecutionMode.background,
+        state=SubagentExecutionState.succeeded,
+        input_state=SubagentInputState.applied,
+        delivery_state=SubagentDeliveryState.pending,
+        parent_agent_id="main",
+        parent_logical_run_id="parent-run",
+        prompt="done",
+        output="done",
+    )
+    await store.create(record)
+    state_files = SessionStateFiles(database_path)
+    read_model = MagicMock(wraps=state_files._read_model)
+    state_files._read_model = read_model  # type: ignore[method-assign]
+
+    first = state_files.list_subagents("session")
+    second = state_files.list_subagents("session")
+
+    assert first == second
+    assert read_model.call_count == 1
+    await store.close()
+    product_store.close()
 
 
 async def test_execution_create_keeps_active_descriptor_across_product_maintenance(

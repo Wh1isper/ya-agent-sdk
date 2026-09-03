@@ -82,7 +82,7 @@ class SessionApplicationService:
 
     def list_session_summaries(self, *, limit: int = 100) -> tuple[SessionSummary, ...]:
         """Return bounded durable projections for CLI and TUI session browsers."""
-        return tuple(self._summarize(session) for session in self.store.list_sessions(limit=limit))
+        return self.store.list_session_summaries(limit=limit)
 
     def get_session_summary(self, session_id_or_prefix: str) -> SessionSummary:
         return self._summarize(self.resolve_session(session_id_or_prefix))

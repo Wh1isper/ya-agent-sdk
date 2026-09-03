@@ -431,8 +431,12 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     config_manager = MockConfigManager(config_dir=tmp_path)
     app = TUIApp(config=config, config_manager=config_manager)
 
+    current_skill = MagicMock()
+    current_runtime = MagicMock()
+    current_runtime.ctx.available_skills = {"current-skill": current_skill}
     runtime = MagicMock()
     runtime.capabilities = []
+    runtime.ctx.available_skills = {}
     runtime.ctx.injected_context_tags = ()
     runtime.ctx.model_cfg.context_window = 270000
     plan = MagicMock(runtime=runtime)
@@ -441,6 +445,7 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     skill_toolset = MagicMock()
     skill_toolset.refresh_context = AsyncMock()
     app._execution_worker = worker
+    app._runtime = current_runtime
     app._skill_toolsets = {"ws": skill_toolset}
     app._model_selector_open = True
     app._model_selector_profiles = build_model_profiles(config)
@@ -449,7 +454,8 @@ async def test_tui_model_selector_activates_registered_gateway_websocket_plan(
     await app._apply_model_selector_selection()
 
     worker.activate.assert_awaited_once_with("ws")
-    skill_toolset.refresh_context.assert_awaited_once_with(runtime.ctx)
+    skill_toolset.refresh_context.assert_not_awaited()
+    assert runtime.ctx.available_skills == {"current-skill": current_skill}
     assert app._runtime is runtime
     assert app._active_model_profile == ResolvedModelProfile(
         id="ws",
@@ -3878,7 +3884,7 @@ async def test_tui_app_immediate_agent_cancellation_clears_timer_and_phase() -> 
     assert app.phase == TUIPhase.IDLE
 
 
-def test_tui_app_status_places_sdk_cost_immediately_after_context() -> None:
+def test_tui_app_status_shows_context_tokens_cache_rate_and_cost() -> None:
     config = YaacliConfig(display=DisplayConfig(show_token_usage=True))
     app = TUIApp(config=config, config_manager=MockConfigManager())
     app._get_terminal_width = lambda: 120  # type: ignore[method-assign]
@@ -3893,7 +3899,7 @@ def test_tui_app_status_places_sdk_cost_immediately_after_context() -> None:
 
     status = "".join(text for _style, text in app._get_status_text())
 
-    assert " · ctx 25% · cost ~$0.0070" in status
+    assert " · ctx 25% · tokens 12 · cache 0.0% · cost ~$0.0070" in status
 
 
 async def test_parent_and_child_hitl_requests_are_serialized_by_owner() -> None:

@@ -26,9 +26,11 @@ from pydantic_ai.usage import RunUsage
 from pydantic_core import to_jsonable_python
 from ya_agent_sdk.agents.main import AgentRuntime, RuntimeReadyContext
 from ya_agent_sdk.context import NoteManager, ResumableState, StreamEvent, TaskManager, ToolProxyState
+from ya_agent_sdk.events import UsageSnapshotEvent
 from ya_agent_sdk.execution import AgentExecutionHarness, AgentSegment, AgentSegmentRequest, AgentSegmentStatus
 from ya_agent_sdk.inputs import ActiveRunRegistry, InputDisposition, InputOrigin, RunInputLedger
 from ya_agent_sdk.subagents import DelegationCapability
+from ya_agent_sdk.usage import UsageSnapshot
 
 from yaacli.display_replay import BoundedDisplayReplay
 from yaacli.durable.bindings import runtime_bindings
@@ -54,6 +56,7 @@ from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.store import SessionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.session import TUIContext
+from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY, SessionUsage
 
 _USER_CONTENT = TypeAdapter(list[UserContent])
 RuntimeBuilder = Callable[
@@ -264,6 +267,7 @@ class LocalExecutionCoordinator:
         latest_context = plan.runtime.ctx
         resume_state: ResumableState | None = None
         cumulative_usage = RunUsage()
+        session_usage = SessionUsage()
         segment_index = 0
         deferred_results: DeferredToolResults | None = None
         current_prompt: str | Sequence[UserContent] | None = (
@@ -281,6 +285,7 @@ class LocalExecutionCoordinator:
                     context = self._new_execution_context(run, plan.runtime)
                     if segment_index == 0:
                         latest_history = self._restore_head(run, context)
+                        session_usage.restore_snapshot(context.session_usage_snapshot)
                     elif resume_state is not None:
                         restore_resumable_state_safely(resume_state, context)
                         context.run_input_ledger.logical_run_id = run.logical_run_id
@@ -322,6 +327,18 @@ class LocalExecutionCoordinator:
                                             plan.runtime.ctx,
                                             event.event.enqueue_id,
                                         )
+                                    if (
+                                        event.agent_id == context.agent_id
+                                        and isinstance(event.event, UsageSnapshotEvent)
+                                        and event.event.snapshot is not None
+                                    ):
+                                        snapshot = event.event.snapshot.model_copy(
+                                            update={"run_id": run.logical_run_id}
+                                        )
+                                        session_usage.set_run_snapshot(snapshot)
+                                        context.session_usage_snapshot = session_usage.export_snapshot(
+                                            run_id=f"session:{run.session_id}"
+                                        )
                                     if self.event_sink is not None:
                                         await self.event_sink(event)
                                 segment.raise_if_exception()
@@ -342,6 +359,11 @@ class LocalExecutionCoordinator:
                 latest_context = plan.runtime.ctx
                 latest_history = list(outcome.checkpoint.messages)
                 resume_state = outcome.checkpoint.state
+                run_snapshot = outcome.checkpoint.usage.model_copy(update={"run_id": run.logical_run_id})
+                session_usage.set_run_snapshot(run_snapshot)
+                latest_context.session_usage_snapshot = session_usage.export_snapshot(
+                    run_id=f"session:{run.session_id}"
+                )
                 cumulative_usage.incr(outcome.checkpoint.usage.total_usage)
                 checkpoint_payload = self._revision_payload(
                     latest_context,
@@ -459,6 +481,7 @@ class LocalExecutionCoordinator:
 
     def _restore_head(self, run: LogicalRunRecord, context: TUIContext) -> list[ModelMessage] | None:
         if run.expected_head_revision_id is None:
+            context.session_usage_snapshot = None
             return None
         revision = self.store.get_revision(run.expected_head_revision_id)
         if revision is None:
@@ -468,6 +491,10 @@ class LocalExecutionCoordinator:
             restore_resumable_state_safely(state, context)
             context.durable_logical_run_id = run.logical_run_id
             context.run_input_ledger = RunInputLedger(logical_run_id=run.logical_run_id)
+        snapshot_payload = revision.usage.get(SESSION_USAGE_SNAPSHOT_REVISION_KEY)
+        context.session_usage_snapshot = (
+            UsageSnapshot.model_validate(snapshot_payload) if snapshot_payload is not None else None
+        )
         return ModelMessagesTypeAdapter.validate_python(revision.message_history)
 
     def _initial_input(self, logical_run_id: str) -> InputRecord:
@@ -817,6 +844,12 @@ class LocalExecutionCoordinator:
         terminal: dict[str, Any],
     ) -> RevisionPayload:
         product_inputs = [item.model_dump(mode="json") for item in self.store.list_inputs(run.logical_run_id)]
+        usage_payload = cast(dict[str, JsonValue], to_jsonable_python(usage))
+        if context.session_usage_snapshot is not None:
+            usage_payload[SESSION_USAGE_SNAPSHOT_REVISION_KEY] = cast(
+                JsonValue,
+                context.session_usage_snapshot.model_dump(mode="json"),
+            )
         return RevisionPayload(
             message_history=cast(list[Any], ModelMessagesTypeAdapter.dump_python(history, mode="json")),
             resumable_state=cast(
@@ -831,7 +864,7 @@ class LocalExecutionCoordinator:
                 },
             ),
             display_projection=self._current_terminal_display_projection(run),
-            usage=cast(dict[str, Any], to_jsonable_python(usage)),
+            usage=usage_payload,
             terminal=terminal,
         )
 
@@ -1074,16 +1107,38 @@ def _merge_durable_display_projection(
     stable: Sequence[JsonValue],
     live: Sequence[JsonValue],
 ) -> list[JsonValue]:
-    """Merge only durable-input UI facts into a stable terminal projection."""
+    """Merge durable input facts beside their original acceptance position."""
     merged = list(stable)
     identities = {identity for event in merged if (identity := _durable_display_event_identity(event)) is not None}
     for event in live:
         identity = _durable_display_event_identity(event)
         if identity is None or identity in identities:
             continue
-        merged.append(event)
+        if identity[0] == STEERING_APPLIED_EVENT_NAME:
+            merged.insert(_steering_application_insertion_index(merged, identity[1]), event)
+        else:
+            merged.append(event)
         identities.add(identity)
     return merged
+
+
+def _steering_application_insertion_index(events: Sequence[JsonValue], projection_key: str) -> int:
+    """Place recovered application facts after an adjacent acceptance batch."""
+    accepted_identity = (STEERING_ACCEPTED_EVENT_NAME, projection_key)
+    accepted_index = next(
+        (
+            index
+            for index in range(len(events) - 1, -1, -1)
+            if _durable_display_event_identity(events[index]) == accepted_identity
+        ),
+        None,
+    )
+    if accepted_index is None:
+        return len(events)
+    insertion_index = accepted_index + 1
+    while insertion_index < len(events) and _durable_display_event_identity(events[insertion_index]) is not None:
+        insertion_index += 1
+    return insertion_index
 
 
 def _durable_display_event_identity(event: JsonValue) -> tuple[str, str] | None:

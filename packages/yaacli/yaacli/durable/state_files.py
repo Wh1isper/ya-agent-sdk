@@ -77,6 +77,8 @@ class SessionStateFiles:
             )
             + "\n"
         )
+        self._subagent_cache: dict[Path, tuple[int, int, int, SubagentStateFile]] = {}
+        self._subagent_cache_scope: str | None = None
         self.root.mkdir(parents=True, exist_ok=True)
 
     def process_owner_is_alive(self, owner_token: str) -> bool:
@@ -171,10 +173,26 @@ class SessionStateFiles:
     def write_subagent(self, state: SubagentStateFile) -> Path:
         path = self.subagent_path(state.record.owner_scope_id, state.record.execution_id, create=True)
         self._write_model(path, state)
+        if self._subagent_cache_scope == state.record.owner_scope_id:
+            stat = path.stat()
+            self._subagent_cache[path] = (stat.st_ino, stat.st_mtime_ns, stat.st_size, state)
+        else:
+            self._subagent_cache.pop(path, None)
         return path
 
     def read_subagent(self, session_id: str, execution_id: str) -> SubagentStateFile:
-        return self._read_model(self.subagent_path(session_id, execution_id), SubagentStateFile)
+        return self._read_subagent_path(self.subagent_path(session_id, execution_id))
+
+    def _read_subagent_path(self, path: Path) -> SubagentStateFile:
+        """Reuse immutable parsed state until the atomically replaced file changes."""
+        stat = path.stat()
+        signature = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        cached = self._subagent_cache.get(path)
+        if cached is not None and cached[:3] == signature:
+            return cached[3]
+        state = self._read_model(path, SubagentStateFile)
+        self._subagent_cache[path] = (*signature, state)
+        return state
 
     def find_subagent(self, execution_id: str) -> SubagentStateFile | None:
         component = _safe_component(execution_id, label="execution ID")
@@ -187,17 +205,28 @@ class SessionStateFiles:
             return None
         if len(matches) != 1:
             raise RuntimeError(f"Subagent execution ID is not globally unique: {execution_id!r}")
-        return self._read_model(matches[0], SubagentStateFile)
+        return self._read_subagent_path(matches[0])
 
     def list_subagents(self, session_id: str | None = None) -> tuple[SubagentStateFile, ...]:
-        managed_ids = self.list_managed_session_ids()
-        if session_id is not None:
+        if session_id is None:
+            paths = (
+                path
+                for managed_id in self.list_managed_session_ids()
+                for path in (self.root / managed_id / "subagents").glob("*/state.json")
+            )
+            states = [self._read_model(path, SubagentStateFile) for path in paths]
+        else:
             component = _safe_component(session_id, label="session ID")
-            managed_ids = (component,) if component in managed_ids else ()
-        paths = (
-            path for managed_id in managed_ids for path in (self.root / managed_id / "subagents").glob("*/state.json")
-        )
-        states = [self._read_model(path, SubagentStateFile) for path in paths]
+            session_dir = self.session_dir(component)
+            paths = tuple((session_dir / "subagents").glob("*/state.json")) if session_dir.exists() else ()
+            if self._subagent_cache_scope != component:
+                self._subagent_cache.clear()
+                self._subagent_cache_scope = component
+            retained_paths = set(paths)
+            self._subagent_cache = {
+                path: cached for path, cached in self._subagent_cache.items() if path in retained_paths
+            }
+            states = [self._read_subagent_path(path) for path in paths]
         return tuple(sorted(states, key=lambda state: (state.created_at, state.record.execution_id)))
 
     def session_has_nonterminal_subagents(self, session_id: str) -> bool:

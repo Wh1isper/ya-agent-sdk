@@ -182,8 +182,10 @@ def test_cli_help_includes_sessions_and_profile_options() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_tui_profile_override_is_not_persisted(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CLI --profile applies to one invocation; interactive /model owns persistence."""
+async def test_run_tui_profile_override_selects_initial_runtime_without_persisting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI --profile selects the initial runtime; interactive /model owns persistence."""
     from yaacli import cli as cli_module
 
     config = MagicMock()
@@ -195,8 +197,9 @@ async def test_run_tui_profile_override_is_not_persisted(monkeypatch: pytest.Mon
     fake_app._switch_model_profile = AsyncMock()
     fake_app.run = AsyncMock()
     fake_app.has_session_data = False
+    tui_app = MagicMock(return_value=fake_app)
     monkeypatch.setattr("yaacli.model_profiles.get_model_profile", MagicMock(return_value=profile))
-    monkeypatch.setattr("yaacli.app.TUIApp", MagicMock(return_value=fake_app))
+    monkeypatch.setattr("yaacli.app.TUIApp", tui_app)
 
     result = await cli_module._run_tui(
         config,
@@ -206,7 +209,8 @@ async def test_run_tui_profile_override_is_not_persisted(monkeypatch: pytest.Mon
     )
 
     assert result is None
-    fake_app._switch_model_profile.assert_awaited_once_with(profile, persist=False)
+    fake_app._switch_model_profile.assert_not_awaited()
+    assert tui_app.call_args.kwargs["initial_model_profile"] is profile
 
 
 def test_cli_tui_forwards_session_and_profile(monkeypatch) -> None:  # type: ignore[no-untyped-def]

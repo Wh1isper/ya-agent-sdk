@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-from ya_agent_sdk.context import AgentContext, ResumableState
+from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.usage import UsageSnapshot
-
-
-class TUIResumableState(ResumableState):
-    """YAACLI session state with a compact cumulative usage snapshot."""
-
-    session_usage_snapshot: UsageSnapshot | None = None
 
 
 class TUIContext(AgentContext):
@@ -34,6 +28,9 @@ class TUIContext(AgentContext):
 
     durable_logical_run_id: str | None = None
     """Current product logical run selected by the execution coordinator."""
+
+    session_usage_snapshot: UsageSnapshot | None = None
+    """Compact cumulative usage restored with the durable session head."""
 
     goal_task: str | None = None
     goal_iteration: int = 0

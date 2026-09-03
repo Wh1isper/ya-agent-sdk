@@ -9,12 +9,13 @@ import pytest
 from pydantic_ai import EnqueuedMessagesEvent
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import StreamEvent
-from ya_agent_sdk.events import ModelRequestCompleteEvent, SubagentCompleteEvent, SubagentStartEvent
+from ya_agent_sdk.events import ModelRequestCompleteEvent, SubagentCompleteEvent, SubagentStartEvent, UsageSnapshotEvent
+from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
 from ya_agent_stream_protocol.sdk import AguiEventAdapter
 from yaacli.app import TUIApp
 from yaacli.app.tui import YAACLI_AGUI_ADAPTER_CONFIG, PendingAttachment
 from yaacli.config import CommandDefinition
-from yaacli.durable.executor import _safe_recovery_display_projection
+from yaacli.durable.executor import _merge_durable_display_projection, _safe_recovery_display_projection
 from yaacli.durable.models import InputPriority, InputRecord, InputState, RevisionRecord
 from yaacli.events import GoalCompleteEvent, GoalCompleteReason
 from yaacli.session import TUIContext
@@ -358,6 +359,34 @@ def test_tui_display_subagent_tool_chunk_updates_progress_line() -> None:
     assert app._subagent_states["subagent-1"]["tool_names"] == ["shell"]
 
 
+def test_tui_usage_snapshots_are_scoped_to_durable_logical_runs() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+
+    for run_id, tokens in (("logical-1", 100), ("logical-2", 250)):
+        app._active_logical_run_id = run_id
+        usage = RunUsage(input_tokens=tokens)
+        snapshot = UsageSnapshot(
+            run_id="provider-session",
+            total_usage=usage,
+            agent_usages={
+                "main": UsageAgentTotal(agent_name="main", model_id="model-a", usage=usage),
+            },
+            model_usages={"model-a": usage},
+        )
+        app._handle_stream_event(
+            StreamEvent(
+                agent_id="main",
+                agent_name="main",
+                event=UsageSnapshotEvent(event_id=f"usage-{run_id}", snapshot=snapshot, source="test"),
+            )
+        )
+        app._session_usage.commit_run_snapshot(run_id)
+        app._session_usage.finalize_run_snapshots(run_id)
+
+    assert app._session_usage.total_tokens == 350
+    assert app._session_usage._run_snapshots == {}
+
+
 def test_tui_suppresses_background_subagent_inline_progress_by_explicit_mode() -> None:
     app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
     app._display_adapter = AguiEventAdapter(
@@ -468,6 +497,51 @@ def test_tui_replays_applied_steering_custom_event() -> None:
     render.assert_called_once_with(["follow up"])
     assert app._output_lines == ["steering rendered"]
     assert app._projected_steering_keys == {"steering-projection"}
+
+
+def test_tui_merges_adjacent_applied_steering_events_into_one_block() -> None:
+    app = TUIApp(config=MockConfig(), config_manager=MockConfigManager())  # type: ignore[arg-type]
+    app._event_renderer.render_steering_injected = MagicMock(
+        side_effect=lambda previews: f"steering: {', '.join(previews)}"
+    )  # type: ignore[method-assign]
+    events = [
+        {
+            "type": "CUSTOM",
+            "name": "yaacli.steering_applied",
+            "value": {"projection_key": "steering-one", "messages": ["first"]},
+        },
+        {
+            "type": "CUSTOM",
+            "name": "yaacli.steering_applied",
+            "value": {"projection_key": "steering-two", "messages": ["second"]},
+        },
+    ]
+
+    app._restore_output_from_display_events(events)
+
+    assert app._output_lines == ["steering: first, second"]
+    assert [call.args[0] for call in app._event_renderer.render_steering_injected.call_args_list] == [
+        ["first"],
+        ["first", "second"],
+    ]
+
+
+def test_durable_applied_steering_is_restored_beside_acceptance_not_at_bottom() -> None:
+    accepted = {
+        "type": "CUSTOM",
+        "name": "yaacli.steering_accepted",
+        "value": {"projection_key": "steering-one"},
+    }
+    applied = {
+        "type": "CUSTOM",
+        "name": "yaacli.steering_applied",
+        "value": {"projection_key": "steering-one", "messages": ["focus"]},
+    }
+    trailing_output = {"type": "TEXT_MESSAGE_CHUNK", "messageId": "message", "delta": "done"}
+
+    merged = _merge_durable_display_projection([accepted, trailing_output], [accepted, applied])
+
+    assert merged == [accepted, applied, trailing_output]
 
 
 def test_tui_steering_projection_deduplicates_after_replay_restore() -> None:

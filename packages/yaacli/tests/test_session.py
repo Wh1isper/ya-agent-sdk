@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
+from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.context import ResumableState
+from ya_agent_sdk.usage import UsageAgentTotal, UsageSnapshot
 from yaacli.config import ConfigManager
 from yaacli.durable.application import SessionApplicationService
+from yaacli.durable.models import RevisionRecord
 from yaacli.durable.restoration import restore_resumable_state_safely
 from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.session import TUIContext
+from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY
 
 
 def _config() -> MagicMock:
@@ -56,6 +62,64 @@ def test_restore_resumable_state_preserves_current_approval_policy() -> None:
 
     assert ctx.need_user_approve_tools == ["shell"]
     assert ctx.need_user_approve_mcps == ["filesystem"]
+
+
+def test_restore_revision_rehydrates_cumulative_session_usage() -> None:
+    from yaacli.app.tui import TUIApp
+
+    usage = RunUsage(input_tokens=1_000, output_tokens=250, cache_read_tokens=800)
+    snapshot = UsageSnapshot(
+        run_id="session:abc",
+        total_usage=usage,
+        agent_usages={
+            "main": UsageAgentTotal(agent_name="main", model_id="model-a", usage=usage),
+        },
+        model_usages={"model-a": usage},
+    )
+    app = TUIApp(config=_config(), config_manager=MagicMock())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+
+    app._restore_revision(
+        RevisionRecord(
+            revision_id="revision-1",
+            session_id="abc",
+            logical_run_id="logical-1",
+            commit_kind="success",
+            resumable_state=TUIContext().export_state().model_dump(mode="json"),
+            usage={SESSION_USAGE_SNAPSHOT_REVISION_KEY: snapshot.model_dump(mode="json")},
+            created_at=datetime.now(UTC),
+        )
+    )
+
+    assert app._session_usage.total_tokens == 1_250
+    assert app._session_usage.total_cache_read_tokens == 800
+    assert runtime.ctx.session_usage_snapshot is not None
+    assert runtime.ctx.session_usage_snapshot.total_usage == usage
+
+
+def test_restore_revision_rejects_host_usage_inside_portable_state() -> None:
+    from yaacli.app.tui import TUIApp
+
+    app = TUIApp(config=_config(), config_manager=MagicMock())
+    runtime = MagicMock()
+    runtime.ctx = TUIContext()
+    app._runtime = runtime
+    state_payload = TUIContext().export_state().model_dump(mode="json")
+    state_payload["session_usage_snapshot"] = {"run_id": "invalid-portable-field"}
+
+    with pytest.raises(ValidationError, match="session_usage_snapshot"):
+        app._restore_revision(
+            RevisionRecord(
+                revision_id="revision-invalid",
+                session_id="abc",
+                logical_run_id="logical-invalid",
+                commit_kind="success",
+                resumable_state=state_payload,
+                created_at=datetime.now(UTC),
+            )
+        )
 
 
 def test_get_sessions_dir(tmp_path: Path) -> None:
