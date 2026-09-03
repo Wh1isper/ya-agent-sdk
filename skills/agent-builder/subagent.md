@@ -326,6 +326,13 @@ restore that independent state for every segment; switching the visible parent s
 never selects a different child context. Shared Environment/routing authorities are
 explicit host services, not mutable context aliases.
 
+Provider routing is isolated as well. The in-process driver binds the child's
+`provider_session_id` and `provider_thread_id` to `root_execution_id`, while durable
+hosts may use an equivalent stable child-session identity. A child's `x-session-id`
+must differ from the main agent's and remain unchanged across retries and linked
+continuations. Context-header models receive the same request-time header and capable
+`openai_prompt_cache_key` binding in child `Agent.from_spec()` construction as roots.
+
 `resume()` starts a linked new execution only after a prior execution is terminal. It
 uses that record's exact descriptor and history even if the active route changed or was
 deleted; it never falls back to the current route. Native `DeferredToolRequests` instead

@@ -1159,10 +1159,10 @@ class AgentContext(BaseModel):
     """Stable host-defined authorization scope for child execution operations."""
 
     provider_session_id: str | None = None
-    """Provider-facing session identifier for model request headers."""
+    """Stable provider-facing session identifier; defaults to the context's initial run ID."""
 
     provider_thread_id: str | None = None
-    """Provider-facing thread identifier for model request headers."""
+    """Optional provider-facing thread identifier for model request headers."""
 
     start_at: datetime | None = None
     """Timestamp when the context was entered."""
@@ -1405,6 +1405,8 @@ class AgentContext(BaseModel):
         super().__init__(**data)
         if self.delegation_scope_id is None:
             self.delegation_scope_id = self.run_id
+        if _string_header_value(self.provider_session_id) is None:
+            self.provider_session_id = self.run_id
         object.__setattr__(self, "_enter_lock", asyncio.Lock())
         object.__setattr__(self, "_subagent_state_lock", asyncio.Lock())
 
@@ -1468,8 +1470,8 @@ class AgentContext(BaseModel):
         OAuth-backed Codex models use both underscore and hyphen header variants,
         matching OpenAI Codex session header behavior.
         """
-        session_id = _string_header_value(getattr(self, "provider_session_id", None)) or self.run_id
-        thread_id = _string_header_value(getattr(self, "provider_thread_id", None)) or self.run_id
+        session_id = _string_header_value(self.provider_session_id) or self.run_id
+        thread_id = _string_header_value(self.provider_thread_id) or self.run_id
         return {
             "session_id": session_id,
             "session-id": session_id,
@@ -1765,9 +1767,8 @@ class AgentContext(BaseModel):
         Returns:
             A new context instance ready for a fresh agent run.
         """
-        stable_run_id = self.provider_thread_id or self.provider_session_id
         update: dict[str, Any] = {
-            "run_id": stable_run_id or _generate_run_id(),
+            "run_id": self.provider_thread_id or _generate_run_id(),
             "start_at": datetime.now(UTC),
             "end_at": None,
             "tool_id_wrapper": ToolIdWrapper(),
@@ -1801,7 +1802,7 @@ class AgentContext(BaseModel):
         """Create a child context for subagent with independent timing.
 
         The subagent context inherits all fields but gets:
-        - A new run_id (uses agent_id if provided, otherwise generates one)
+        - A new run_id and isolated provider session/thread identity
         - parent_run_id set to current run_id
         - Fresh timing (start_at/end_at managed by __aenter__/__aexit__)
         - Shared file_operator and shell from parent
@@ -1826,6 +1827,7 @@ class AgentContext(BaseModel):
             A new context instance configured for the subagent.
         """
         effective_agent_id = agent_id or _generate_run_id()
+        child_run_id = _generate_run_id()
         if effective_agent_id == "main":
             raise ValueError("Subagent agent_id 'main' is reserved for the root agent")
         self.agent_stream_info.setdefault(
@@ -1838,8 +1840,10 @@ class AgentContext(BaseModel):
         )
 
         update: dict[str, Any] = {
-            "run_id": _generate_run_id(),
+            "run_id": child_run_id,
             "parent_run_id": self.run_id,
+            "provider_session_id": child_run_id,
+            "provider_thread_id": child_run_id,
             "start_at": None,  # Will be set by __aenter__
             "end_at": None,  # Will be set by __aexit__
             "handoff_message": None,  # Subagents don't inherit handoff state

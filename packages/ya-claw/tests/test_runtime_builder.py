@@ -138,6 +138,8 @@ def _build_runtime(
     source_kind: str = "api",
     source_metadata: dict[str, object] | None = None,
     capability_catalog: CapabilityCatalog | None = None,
+    session_id: str = "session-1",
+    run_id: str = "run-1",
 ):
     host_path = tmp_path / "workspace"
     binding = _binding(host_path)
@@ -155,8 +157,8 @@ def _build_runtime(
         binding=binding,
         environment=_environment(host_path),
         restore_state=None,
-        session_id="session-1",
-        run_id="run-1",
+        session_id=session_id,
+        run_id=run_id,
         restore_from_run_id=None,
         dispatch_mode="async",
         source_kind=source_kind,
@@ -187,9 +189,68 @@ async def test_runtime_builder_streams_with_test_model_and_native_agent_spec(tmp
     assert FilesystemCapability in root_capability_types
     assert SkillsCapability in resolved_capability_types
     assert ToolSupersessionCapability in resolved_capability_types
+    assert runtime.ctx.run_id == "run-1"
     assert runtime.ctx.session_id == "session-1"
     assert runtime.ctx.claw_run_id == "run-1"
+    assert runtime.ctx.provider_session_id == "session-1"
+    assert runtime.ctx.provider_thread_id == "run-1"
     assert exported_state is not None
+
+
+def test_runtime_builder_keeps_provider_session_stable_across_claw_runs(tmp_path: Path) -> None:
+    first_runtime, _ = _build_runtime(
+        tmp_path / "first",
+        _profile(),
+        session_id="stable-session",
+        run_id="run-1",
+    )
+    second_runtime, _ = _build_runtime(
+        tmp_path / "second",
+        _profile(),
+        session_id="stable-session",
+        run_id="run-2",
+    )
+
+    first_headers = first_runtime.ctx.get_model_extra_headers()
+    second_headers = second_runtime.ctx.get_model_extra_headers()
+
+    assert first_runtime.ctx.run_id == "run-1"
+    assert second_runtime.ctx.run_id == "run-2"
+    assert first_headers["x-session-id"] == "stable-session"
+    assert second_headers["x-session-id"] == "stable-session"
+    assert first_headers["x-client-request-id"] == "run-1"
+    assert second_headers["x-client-request-id"] == "run-2"
+
+
+def test_runtime_builder_keeps_async_child_provider_session_distinct_and_stable(tmp_path: Path) -> None:
+    source_metadata = {"async_task": {"task_id": "task-1", "parent_session_id": "parent-session"}}
+    first_runtime, _ = _build_runtime(
+        tmp_path / "first-child",
+        _profile(),
+        source_kind="async_task",
+        source_metadata=source_metadata,
+        session_id="child-session",
+        run_id="child-run-1",
+    )
+    second_runtime, _ = _build_runtime(
+        tmp_path / "second-child",
+        _profile(),
+        source_kind="async_task",
+        source_metadata=source_metadata,
+        session_id="child-session",
+        run_id="child-run-2",
+    )
+
+    first_headers = first_runtime.ctx.get_model_extra_headers()
+    second_headers = second_runtime.ctx.get_model_extra_headers()
+
+    assert first_runtime.ctx.is_async_subagent is True
+    assert second_runtime.ctx.is_async_subagent is True
+    assert first_headers["x-session-id"] == "child-session"
+    assert second_headers["x-session-id"] == "child-session"
+    assert first_headers["x-session-id"] != "parent-session"
+    assert first_headers["x-client-request-id"] == "child-run-1"
+    assert second_headers["x-client-request-id"] == "child-run-2"
 
 
 async def test_runtime_builder_instantiates_configured_plugin_once(tmp_path: Path) -> None:

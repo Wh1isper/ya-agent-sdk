@@ -8,14 +8,16 @@ import pytest
 from pydantic_ai import ModelSettings
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from ya_agent_sdk.agents.main import create_agent
+from ya_agent_sdk.agents.main import create_agent, stream_agent
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature
 
 
 def test_agent_context_model_extra_headers_defaults_to_run_id() -> None:
     ctx = AgentContext(run_id="run-1")
+    empty_override = AgentContext(run_id="run-2", provider_session_id="")
 
+    assert empty_override.provider_session_id == "run-2"
     assert ctx.get_model_extra_headers() == {
         "session_id": "run-1",
         "session-id": "run-1",
@@ -208,6 +210,51 @@ async def test_provider_session_settings_follow_active_request_context(monkeypat
             },
         }
     ]
+
+
+async def test_provider_session_settings_stay_stable_across_default_runtime_runs(monkeypatch) -> None:
+    observed_settings: list[ModelSettings | None] = []
+
+    async def model_stream(_messages, info: AgentInfo):  # type: ignore[no-untyped-def]
+        observed_settings.append(info.model_settings)
+        yield "ok"
+
+    monkeypatch.setattr(
+        "ya_agent_sdk.agents.main.infer_model",
+        lambda *_args, **_kwargs: FunctionModel(stream_function=model_stream),
+    )
+    runtime = create_agent(
+        "oauth@codex:gpt-5.5",
+        model_cfg=ModelConfig(
+            context_window=1000,
+            capabilities={ModelFeature.openai_prompt_cache_key},
+        ),
+    )
+    provider_session_id = runtime.ctx.provider_session_id
+    assert provider_session_id == runtime.ctx.run_id
+
+    async with runtime:
+        for prompt in ("first", "second"):
+            async with stream_agent(runtime, prompt) as streamer:
+                async for _ in streamer:
+                    pass
+            streamer.raise_if_exception()
+
+    assert len(observed_settings) == 2
+    assert all(settings is not None for settings in observed_settings)
+    resolved_settings = [settings for settings in observed_settings if settings is not None]
+    assert [settings["openai_prompt_cache_key"] for settings in resolved_settings] == [
+        provider_session_id,
+        provider_session_id,
+    ]
+    assert [settings["extra_headers"]["x-session-id"] for settings in resolved_settings] == [
+        provider_session_id,
+        provider_session_id,
+    ]
+    assert (
+        resolved_settings[0]["extra_headers"]["x-client-request-id"]
+        != (resolved_settings[1]["extra_headers"]["x-client-request-id"])
+    )
 
 
 async def test_create_agent_does_not_patch_prompt_cache_key_without_capability(monkeypatch) -> None:

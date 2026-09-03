@@ -14,12 +14,19 @@ from pydantic_ai import (
     AgentSpec,
     DeferredToolRequests,
     DeferredToolResults,
+    ModelSettings,
     Tool,
     ToolDenied,
 )
 from pydantic_ai._spec import CapabilitySpec
 from pydantic_ai.agent.spec import load_capability_from_nested_spec
-from pydantic_ai.capabilities import AbstractCapability, CombinedCapability, PrefixTools, WrapperCapability
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    CapabilityOrdering,
+    CombinedCapability,
+    PrefixTools,
+    WrapperCapability,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -40,7 +47,7 @@ from ya_agent_sdk.capabilities import (
     build_capability_catalog,
     build_default_capability_catalog,
 )
-from ya_agent_sdk.context import AgentContext, ModelConfig, StreamRecoveryPolicy
+from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature, StreamRecoveryPolicy
 from ya_agent_sdk.events import SubagentCompleteEvent, SubagentStartEvent
 from ya_agent_sdk.inputs import (
     EnqueueReceipt,
@@ -92,6 +99,21 @@ class AuditCapability(AbstractCapability[AgentContext]):
 
     def get_instructions(self) -> str:
         return self.text
+
+
+@dataclass
+class ConflictingProviderSettingsCapability(AbstractCapability[AgentContext]):
+    def get_ordering(self) -> CapabilityOrdering:
+        return CapabilityOrdering(position="innermost")
+
+    def get_model_settings(self) -> ModelSettings:
+        return {
+            "openai_prompt_cache_key": "stale-parent-session",
+            "extra_headers": {
+                "x-session-id": "stale-parent-session",
+                "x-client-request-id": "stale-parent-thread",
+            },
+        }
 
 
 @dataclass
@@ -554,6 +576,70 @@ async def test_default_service_runs_foreground_inline_with_readable_identity() -
             mode=SubagentExecutionMode.background,
         )
     await service.close()
+
+
+async def test_in_process_subagent_provider_session_is_distinct_and_stable_across_resume() -> None:
+    observed_settings: list[dict[str, Any]] = []
+
+    async def child_model(
+        _messages: list[ModelMessage],
+        info: FunctionAgentInfo,
+    ):
+        assert info.model_settings is not None
+        observed_settings.append(dict(info.model_settings))
+        yield "done"
+
+    catalog = build_default_capability_catalog()
+    plan = SubagentPlanResolver(
+        catalog,
+        host_capabilities=(ConflictingProviderSettingsCapability(),),
+    ).resolve(
+        SubagentSpec(
+            route="worker",
+            agent=AgentSpec(model="oauth@codex:gpt-5.5"),
+        )
+    )
+    store = InMemorySubagentExecutionStore()
+    service = SubagentExecutionService(
+        SubagentRegistry([plan]),
+        store,
+        InProcessSubagentDriver(
+            custom_capability_types=catalog.custom_capability_types,
+            model_resolver=lambda _name: FunctionModel(stream_function=child_model),
+        ),
+    )
+    parent = AgentContext(
+        run_id="main-thread",
+        provider_session_id="main-session",
+        provider_thread_id="main-thread",
+        delegation_scope_id="main-session",
+        model_cfg=ModelConfig(capabilities={ModelFeature.openai_prompt_cache_key}),
+    )
+
+    initial = await service.spawn("worker", "first", parent, idempotency_key="spawn")
+    resumed = await service.resume(initial.execution_id, "continue", parent, idempotency_key="resume")
+    initial_record = await store.get(initial.execution_id, owner_scope_id="main-session")
+    resumed_record = await store.get(resumed.execution_id, owner_scope_id="main-session")
+    await service.close()
+
+    assert initial_record is not None
+    assert resumed_record is not None
+    assert resumed_record.root_execution_id == initial_record.root_execution_id
+    child_session_id = initial_record.root_execution_id
+    assert child_session_id != parent.provider_session_id
+    assert len(observed_settings) == 2
+    assert [settings["extra_headers"]["x-session-id"] for settings in observed_settings] == [
+        child_session_id,
+        child_session_id,
+    ]
+    assert [settings["openai_prompt_cache_key"] for settings in observed_settings] == [
+        child_session_id,
+        child_session_id,
+    ]
+    assert [settings["extra_headers"]["x-client-request-id"] for settings in observed_settings] == [
+        child_session_id,
+        child_session_id,
+    ]
 
 
 async def test_async_host_retains_completed_failure_until_wait_observes_it() -> None:

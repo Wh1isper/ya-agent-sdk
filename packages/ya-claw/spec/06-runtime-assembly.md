@@ -187,6 +187,10 @@ user who cannot respond.
 `ClawAgentContext` carries typed run metadata and restored SDK state:
 
 - session/run/profile identities;
+- provider routing with `run_id` and `provider_thread_id` bound to the durable run ID,
+  and `provider_session_id` bound to the durable session ID so `x-session-id` and a
+  capable model's `openai_prompt_cache_key` remain stable across session turns; an
+  async subagent uses its separate durable child session, never its parent's identity;
 - restore source and dispatch mode;
 - workspace binding snapshot and container identity;
 - source kind and source metadata;

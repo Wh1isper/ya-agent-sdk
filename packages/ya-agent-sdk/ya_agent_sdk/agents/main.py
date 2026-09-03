@@ -26,7 +26,6 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ModelSettings,
-    RunContext,
     UsageLimits,
     UserError,
 )
@@ -61,6 +60,11 @@ from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.lifecycle import AgentErrorContext, BaseLifecycleExtension, run_extension_method
 from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.provider_routing import (
+    ProviderSessionSettingsCapability,
+    model_uses_context_headers,
+    patch_prompt_cache_key,
+)
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
     StreamRetryController,
@@ -74,7 +78,6 @@ from ya_agent_sdk.context import (
     AgentInfo,
     AgentStreamEvent,
     ModelConfig,
-    ModelFeature,
     ModelWrapper,
     ResumableState,
     StreamEvent,
@@ -413,87 +416,6 @@ def _validate_capability_sources(sources: Sequence[ResolvedCapabilitySource]) ->
 # =============================================================================
 
 
-_CONTEXT_HEADER_MODEL_PREFIXES = ("oauth@codex:", "openai-responses-rs:", "openai-responses-ws:")
-_GATEWAY_CONTEXT_HEADER_UPSTREAM_PREFIXES = (
-    "openai-responses:",
-    "openai-responses-rs:",
-    "openai-responses-ws:",
-)
-_PROVIDER_CONTEXT_HEADER_NAMES = frozenset({
-    "session_id",
-    "session-id",
-    "x-session-id",
-    "thread_id",
-    "thread-id",
-    "x-client-request-id",
-})
-
-
-def _model_uses_context_headers(model: Model | KnownModelName | str | None) -> bool:
-    if not isinstance(model, str):
-        return False
-    if model.startswith(_CONTEXT_HEADER_MODEL_PREFIXES):
-        return True
-    gateway_name, separator, upstream_model = model.partition("@")
-    return bool(gateway_name and separator and upstream_model.startswith(_GATEWAY_CONTEXT_HEADER_UPSTREAM_PREFIXES))
-
-
-def _patch_provider_session_settings(
-    model_cfg: ModelConfig,
-    model_settings: Mapping[str, Any] | None,
-    model_extra_headers: Mapping[str, str],
-) -> ModelSettings:
-    """Bind one model request to the provider session carried by its current context."""
-    patched_settings: dict[str, Any] = dict(model_settings or {})
-    configured_extra_headers = patched_settings.get("extra_headers")
-    patched_extra_headers = (
-        {
-            name: value
-            for name, value in configured_extra_headers.items()
-            if not isinstance(name, str) or name.lower() not in _PROVIDER_CONTEXT_HEADER_NAMES
-        }
-        if isinstance(configured_extra_headers, Mapping)
-        else {}
-    )
-    patched_extra_headers.update(model_extra_headers)
-    patched_settings["extra_headers"] = patched_extra_headers
-
-    if model_cfg.has_capability(ModelFeature.openai_prompt_cache_key):
-        configured_extra_body = patched_settings.get("extra_body")
-        if isinstance(configured_extra_body, Mapping):
-            patched_settings["extra_body"] = {
-                name: value for name, value in configured_extra_body.items() if name != "prompt_cache_key"
-            }
-        patched_settings["openai_prompt_cache_key"] = model_extra_headers["x-session-id"]
-    return cast(ModelSettings, patched_settings)
-
-
-def _patch_prompt_cache_key(
-    model_cfg: ModelConfig,
-    model_settings: ModelSettings | None,
-    model_extra_headers: dict[str, str] | None,
-) -> ModelSettings | None:
-    """Bind capable model requests to the same session used by their headers."""
-    if not model_cfg.has_capability(ModelFeature.openai_prompt_cache_key) or model_extra_headers is None:
-        return model_settings
-    return _patch_provider_session_settings(model_cfg, model_settings, model_extra_headers)
-
-
-@dataclass(slots=True)
-class _ProviderSessionSettingsCapability(AbstractCapability[AgentContext]):
-    """Resolve provider routing headers from the active run context on every request."""
-
-    def get_model_settings(self) -> Callable[[RunContext[AgentContext]], ModelSettings]:
-        def settings(ctx: RunContext[AgentContext]) -> ModelSettings:
-            return _patch_provider_session_settings(
-                ctx.deps.model_cfg,
-                ctx.model_settings,
-                ctx.deps.get_model_extra_headers(),
-            )
-
-        return settings
-
-
 def _load_system_prompt(
     template: str | None = None,
     template_vars: dict[str, Any] | None = None,
@@ -583,20 +505,20 @@ def create_agent(
     ) -> Agent[AgentDepsT, OutputT]:
         selected_model = model if model is not None else (spec.model if spec is not None else None)
         model_extra_headers = (
-            runtime_ctx.get_model_extra_headers() if _model_uses_context_headers(selected_model) else None
+            runtime_ctx.get_model_extra_headers() if model_uses_context_headers(selected_model) else None
         )
         selected_model_settings = (
             model_settings
             if model_settings is not None
             else cast(ModelSettings | None, spec.model_settings if spec is not None else None)
         )
-        effective_model_settings = _patch_prompt_cache_key(
+        effective_model_settings = patch_prompt_cache_key(
             runtime_ctx.model_cfg,
             selected_model_settings,
             model_extra_headers,
         )
         effective_capabilities = (
-            (*resolved_capabilities, _ProviderSessionSettingsCapability())
+            (*resolved_capabilities, ProviderSessionSettingsCapability())
             if model_extra_headers is not None
             else resolved_capabilities
         )

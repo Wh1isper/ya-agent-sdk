@@ -35,6 +35,7 @@ from pydantic_core import to_jsonable_python
 from ya_agent_sdk._logger import get_logger
 from ya_agent_sdk.agents.driver import drive_streamed_run
 from ya_agent_sdk.agents.models import infer_model
+from ya_agent_sdk.agents.provider_routing import ProviderSessionSettingsCapability, model_uses_context_headers
 from ya_agent_sdk.agents.retry_recovery import (
     DEFAULT_STREAM_RESUME_PROMPT,
     StreamRetryController,
@@ -594,6 +595,8 @@ class InProcessSubagentDriver:
             plan.spec.route,
             record.execution_id,
             parent_run_id=parent_ctx.run_id,
+            provider_session_id=record.root_execution_id,
+            provider_thread_id=record.root_execution_id,
             run_input_ledger=RunInputLedger(logical_run_id=record.child_logical_run_id),
             input_router=None,
             usage_snapshot_entries={},
@@ -621,13 +624,16 @@ class InProcessSubagentDriver:
         )
         current_prompt: str | Sequence[UserContent] | None = None if deferred_results is not None else record.prompt
         usage_limits = self._usage_limits(record)
+        child_capabilities = plan.host_capabilities
+        if model_uses_context_headers(plan.normalized_agent_spec.model):
+            child_capabilities = (*child_capabilities, ProviderSessionSettingsCapability())
         agent = Agent.from_spec(
             plan.normalized_agent_spec,
             deps_type=type(child_ctx),
             custom_capability_types=self.custom_capability_types,
             model=model,
             output_type=resolve_subagent_output_type(plan),
-            capabilities=plan.host_capabilities,
+            capabilities=child_capabilities,
         )
         router = LogicalRunInputRouter(child_ctx.run_input_ledger)
         registration = parent_ctx.active_run_registry.register(router)

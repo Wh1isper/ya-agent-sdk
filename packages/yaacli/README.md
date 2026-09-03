@@ -350,6 +350,8 @@ model_cfg = "gpt5_350k"
 
 `instructions` is an optional static model-instruction segment for the active main-agent profile. YAACLI evaluates it for every model request, alongside the built-in prompt (or `general.system_prompt_file`), project guidance, and user rules. Switching profiles with `/model` replaces the active profile instructions for later requests in the same session, including restored or compacted histories.
 
+For context-header model transports, YAACLI binds the main agent's `x-session-id` to the durable session ID. Each named subagent or self fork instead uses its stable root child execution ID for both provider session and thread routing, so its identity differs from the main agent and survives retry or linked continuation. Model configurations with `openai_prompt_cache_key` derive it from that exact main or child `x-session-id` on every request.
+
 YAACLI enables stream recovery by default for every root and subagent profile. Root agents, named subagents, and self forks use the same overall recovery mechanism. Non-transport execution failures use three total attempts, while each consecutive transient HTTP/WebSocket transport-failure streak uses an independent 20-attempt budget that resets after a successful model request. Each child owns its recovery history, usage accounting, and retry budgets. An inline root or child `model_cfg` can override either budget or explicitly set `stream_resume_on_error = false`.
 
 `[general]` is the startup fallback profile. The last selected profile is remembered in `~/.yaacli/state.json` and restored on the next launch when that profile still exists.

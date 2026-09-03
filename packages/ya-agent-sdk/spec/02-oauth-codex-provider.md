@@ -250,11 +250,17 @@ backend contract.
 ## SDK Session Headers
 
 `AgentContext.get_model_extra_headers()` returns the provider session and thread headers
-for the active execution context. Durable hosts bind these identities explicitly:
-YAACLI uses its durable `session_id` for the provider session and root thread, while YA
-Claw passes `provider_session_id` and `provider_thread_id` through `context_kwargs`.
-YAACLI child executions share the durable session and use their root child execution ID
-as the provider thread.
+for the active execution context. Unless a host overrides it, `provider_session_id` is
+initialized once from the context's initial `run_id` and survives `prepare_new_run()`;
+native run IDs remain fresh unless `provider_thread_id` explicitly pins the thread.
+Consequently, the default `x-session-id` is stable for the context lifetime without
+collapsing distinct native runs. Every SDK child context instead binds both provider IDs
+to its root child execution ID, keeping the child separate from its main agent and
+stable across linked continuation. Durable hosts bind equivalent identities explicitly:
+YAACLI uses its durable `session_id` for the main provider session/thread and the root
+child execution ID for each child provider session/thread. YA Claw uses the main or
+child durable session ID for `provider_session_id` and each durable run ID for
+`provider_thread_id`; resumed Claw child executions reuse their existing child session.
 
 For context-header transports, request model settings are derived from the active
 `RunContext` on every model call rather than frozen when `create_agent()` constructs a
