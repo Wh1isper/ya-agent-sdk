@@ -1493,6 +1493,22 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
         assert new._stream_queue_enabled is False
 
 
+async def test_prepare_new_run_preserves_provider_thread_identity(env: LocalEnvironment) -> None:
+    ctx = AgentContext(
+        env=env,
+        run_id="initial-run",
+        provider_session_id="provider-session",
+        provider_thread_id="provider-thread",
+    )
+
+    first = ctx.prepare_new_run()
+    second = first.prepare_new_run()
+
+    assert first.run_id == "provider-thread"
+    assert second.run_id == "provider-thread"
+    assert second.get_model_extra_headers()["x-session-id"] == "provider-session"
+
+
 async def test_prepare_new_run_shares_long_lived_state(env: LocalEnvironment) -> None:
     """prepare_new_run should share long-lived state by reference."""
     async with AgentContext(env=env) as ctx:

@@ -434,6 +434,9 @@ class LocalExecutionCoordinator:
         context.agent_stream_info = {}
         context.files_to_inspect = []
         context.tool_proxy = ToolProxyState()
+        context.run_id = run.session_id
+        context.provider_session_id = run.session_id
+        context.provider_thread_id = run.session_id
         context.durable_logical_run_id = run.logical_run_id
         context.delegation_scope_id = run.session_id
         context.run_input_ledger = RunInputLedger(logical_run_id=run.logical_run_id)

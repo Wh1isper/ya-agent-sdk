@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 from pydantic_ai import ModelSettings
+from pydantic_ai.messages import ModelResponse, TextPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from ya_agent_sdk.agents.main import create_agent
 from ya_agent_sdk.agents.models import infer_model
 from ya_agent_sdk.context import AgentContext, ModelConfig, ModelFeature
@@ -145,7 +147,15 @@ async def test_create_agent_binds_capable_prompt_cache_key_to_session_header(mon
         assert runtime.agent.model_settings == {
             "temperature": 0.1,
             "openai_prompt_cache_key": "session-1",
-            "extra_headers": {"x-other": "value", "x-session-id": "session-1"},
+            "extra_headers": {
+                "x-other": "value",
+                "session_id": "session-1",
+                "session-id": "session-1",
+                "x-session-id": "session-1",
+                "thread_id": runtime.ctx.run_id,
+                "thread-id": runtime.ctx.run_id,
+                "x-client-request-id": runtime.ctx.run_id,
+            },
             "extra_body": {"other": "value"},
         }
     assert configured_settings["openai_prompt_cache_key"] == "stale-session"
@@ -157,6 +167,47 @@ async def test_create_agent_binds_capable_prompt_cache_key_to_session_header(mon
         "prompt_cache_key": "body-session",
         "other": "value",
     }
+
+
+async def test_provider_session_settings_follow_active_request_context(monkeypatch) -> None:
+    observed_settings: list[ModelSettings | None] = []
+
+    def model_function(_messages, info: AgentInfo) -> ModelResponse:  # type: ignore[no-untyped-def]
+        observed_settings.append(info.model_settings)
+        return ModelResponse(parts=[TextPart(content="ok")])
+
+    monkeypatch.setattr(
+        "ya_agent_sdk.agents.main.infer_model",
+        lambda *_args, **_kwargs: FunctionModel(model_function),
+    )
+    runtime = create_agent(
+        "oauth@codex:gpt-5.5",
+        model_cfg=ModelConfig(
+            context_window=1000,
+            capabilities={ModelFeature.openai_prompt_cache_key},
+        ),
+        context_kwargs={"provider_session_id": "construction-session"},
+    )
+
+    async with runtime:
+        request_ctx = runtime.ctx.prepare_new_run()
+        request_ctx.provider_session_id = "durable-session"
+        request_ctx.provider_thread_id = "durable-thread"
+        await runtime.agent.run("hello", deps=request_ctx)
+
+    assert observed_settings == [
+        {
+            "openai_prompt_cache_key": "durable-session",
+            "extra_headers": {
+                "session_id": "durable-session",
+                "session-id": "durable-session",
+                "x-session-id": "durable-session",
+                "thread_id": "durable-thread",
+                "thread-id": "durable-thread",
+                "x-client-request-id": "durable-thread",
+            },
+        }
+    ]
 
 
 async def test_create_agent_does_not_patch_prompt_cache_key_without_capability(monkeypatch) -> None:

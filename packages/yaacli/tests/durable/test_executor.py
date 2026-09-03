@@ -83,6 +83,30 @@ def test_recoverable_history_merges_partial_stable_overlap_without_duplication()
     ) == [first, overlap, recovered]
 
 
+async def test_execution_context_uses_durable_session_for_provider_identity(tmp_path: Path) -> None:
+    store = SQLiteSessionStore(tmp_path / "product.sqlite3")
+    worker = await _create_worker(store, tmp_path, _runtime_spec(tmp_path, TestModel()))
+    try:
+        service = SessionApplicationService(store, worker.coordinator)
+        session = service.create_session(str(tmp_path), session_id="stable-session")
+        first_run = service.accept_turn(session.session_id, ["first"], idempotency_key="first")
+        second_run = service.accept_turn(session.session_id, ["second"], idempotency_key="second")
+
+        first = worker.coordinator._new_execution_context(first_run, worker.runtime)
+        second = worker.coordinator._new_execution_context(second_run, worker.runtime)
+
+        assert first.run_id == "stable-session"
+        assert second.run_id == "stable-session"
+        assert first.provider_session_id == "stable-session"
+        assert second.provider_session_id == "stable-session"
+        assert first.provider_thread_id == "stable-session"
+        assert second.provider_thread_id == "stable-session"
+        assert first.durable_logical_run_id != second.durable_logical_run_id
+    finally:
+        await worker.close()
+        store.close()
+
+
 async def test_turn_runs_through_local_coordinator_and_commits_revision(tmp_path: Path) -> None:
     store = SQLiteSessionStore(tmp_path / "product.sqlite3")
     worker = await _create_worker(

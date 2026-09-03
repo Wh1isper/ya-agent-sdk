@@ -27,7 +27,7 @@ from ya_agent_sdk.filters.image import (
 )
 from ya_agent_sdk.filters.runtime_instructions import inject_runtime_instructions
 
-from ._request import copy_request_context, project_history
+from ._request import copy_request_context, persist_history_projection, project_history
 
 ModelHandler = Callable[[ModelRequestContext], Awaitable[Any]]
 
@@ -123,7 +123,7 @@ class FileInspectionCapability(AbstractCapability[AgentContext]):
 
 @dataclass(kw_only=True)
 class EnvironmentContextCapability(AbstractCapability[AgentContext]):
-    """Decorate one model request with current Environment instructions."""
+    """Persist current Environment instructions as a canonical request snapshot."""
 
     id: str | None = "environment_context"
 
@@ -141,12 +141,12 @@ class EnvironmentContextCapability(AbstractCapability[AgentContext]):
         if env is None:
             return await handler(request_context)
         processor = create_environment_instructions_filter(env)
-        return await project_history(processor, ctx, request_context, handler)
+        return await persist_history_projection(processor, ctx, request_context, handler)
 
 
 @dataclass(kw_only=True)
 class RuntimeContextCapability(AbstractCapability[AgentContext]):
-    """Decorate one model request with fresh runtime/session context."""
+    """Persist fresh runtime/session context as a canonical request snapshot."""
 
     id: str | None = "runtime_context"
 
@@ -157,4 +157,4 @@ class RuntimeContextCapability(AbstractCapability[AgentContext]):
         request_context: ModelRequestContext,
         handler: ModelHandler,
     ) -> Any:
-        return await project_history(inject_runtime_instructions, ctx, request_context, handler)
+        return await persist_history_projection(inject_runtime_instructions, ctx, request_context, handler)
