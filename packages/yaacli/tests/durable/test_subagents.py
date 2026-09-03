@@ -151,8 +151,21 @@ def test_local_subagent_materializes_explicitly_disabled_child_recovery() -> Non
     assert policy.transport_max_attempts == 11
     assert policy.resume_prompt == "root resume prompt"
     assert child_ctx.run_id == "child"
-    assert child_ctx.provider_session_id == "session"
+    assert child_ctx.provider_session_id == "child"
     assert child_ctx.provider_thread_id == "child"
+    assert child_ctx.get_model_extra_headers()["x-session-id"] != record.owner_scope_id
+
+    resumed_ctx = TUIContext(stream_recovery_policy=inherited_policy)
+    resumed_record = record.model_copy(
+        update={
+            "execution_id": "child-resumed",
+            "resumed_from": record.execution_id,
+        }
+    )
+    driver._configure_child_context(plan, resumed_record, TUIContext(), resumed_ctx)
+
+    assert resumed_ctx.provider_session_id == child_ctx.provider_session_id
+    assert resumed_ctx.get_model_extra_headers()["x-session-id"] == "child"
 
 
 async def test_file_subagent_store_creates_no_lock_files(tmp_path: Path) -> None:

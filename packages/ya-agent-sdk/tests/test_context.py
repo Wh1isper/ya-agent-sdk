@@ -30,6 +30,8 @@ async def test_agent_context_default_run_id(env: LocalEnvironment) -> None:
     ctx2 = AgentContext(env=env)
     assert ctx1.run_id != ctx2.run_id
     assert len(ctx1.run_id) == 32  # uuid4().hex length
+    assert ctx1.provider_session_id == ctx1.run_id
+    assert ctx2.provider_session_id == ctx2.run_id
 
 
 async def test_agent_context_no_parent_by_default(env: LocalEnvironment) -> None:
@@ -134,6 +136,10 @@ async def test_agent_context_create_subagent_context(env: LocalEnvironment) -> N
     async with parent.create_subagent_context("search") as child:
         assert child.parent_run_id == parent.run_id
         assert child.run_id != parent.run_id
+        assert child.provider_session_id == child.run_id
+        assert child.provider_thread_id == child.run_id
+        assert child.get_model_extra_headers()["x-session-id"] != (parent.get_model_extra_headers()["x-session-id"])
+        assert child.prepare_new_run().get_model_extra_headers()["x-session-id"] == child.run_id
         # Stream attribution is shared for the process but not resumable.
         assert child.agent_id in parent.agent_stream_info
         assert parent.agent_stream_info[child.agent_id].agent_name == "search"
@@ -1471,8 +1477,10 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
 
         new = ctx.prepare_new_run()
 
-        # Per-run state is fresh
+        # Per-run state is fresh while provider session routing remains stable.
         assert new.run_id != ctx.run_id
+        assert new.provider_session_id == ctx.provider_session_id
+        assert new.get_model_extra_headers()["x-session-id"] == ctx.run_id
         assert new.usage_snapshot_entries == {}
         assert new.deferred_tool_metadata == {}
         assert new.force_inject_instructions is False
@@ -1491,6 +1499,20 @@ async def test_prepare_new_run_fresh_per_run_state(env: LocalEnvironment) -> Non
         # Private state is reset
         assert new._entered is False
         assert new._stream_queue_enabled is False
+
+
+async def test_prepare_new_run_preserves_default_provider_session_identity(env: LocalEnvironment) -> None:
+    ctx = AgentContext(env=env, run_id="initial-run")
+
+    first = ctx.prepare_new_run()
+    second = first.prepare_new_run()
+
+    assert first.run_id != ctx.run_id
+    assert second.run_id != first.run_id
+    assert first.provider_session_id == "initial-run"
+    assert second.provider_session_id == "initial-run"
+    assert first.get_model_extra_headers()["x-session-id"] == "initial-run"
+    assert second.get_model_extra_headers()["x-session-id"] == "initial-run"
 
 
 async def test_prepare_new_run_preserves_provider_thread_identity(env: LocalEnvironment) -> None:

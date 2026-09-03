@@ -125,6 +125,7 @@ class ClawRuntimeBuilder:
         is_async_subagent = _is_async_subagent_source(source_metadata)
         effective_source_metadata = dict(source_metadata or {})
         context_kwargs = {
+            "run_id": run_id,
             "session_id": session_id,
             "claw_run_id": run_id,
             "delegation_scope_id": session_id,

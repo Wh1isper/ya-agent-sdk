@@ -69,6 +69,34 @@ Use `context_type=MyContext` for a typed application context. Do not pass remove
 free-form `extra_context_kwargs`, `tool_config`, or approval arguments directly to
 `create_agent()`.
 
+## Provider Session Identity
+
+`AgentContext.provider_session_id` is the single authority for provider session headers,
+including `x-session-id`. When omitted, it is initialized once from the context's initial
+`run_id` and preserved across `prepare_new_run()`, so a reusable runtime keeps stable
+provider-session routing while ordinary native run IDs remain distinct. A durable host
+should override it with its durable conversation/session ID.
+
+`provider_thread_id` is optional. Set it only when the provider thread must have an
+explicit stable identity; when present, `prepare_new_run()` also uses it as `run_id`.
+For transports whose `ModelConfig` declares
+`ModelFeature.openai_prompt_cache_key`, request preparation derives
+`openai_prompt_cache_key` from the exact same `x-session-id` value rather than accepting
+a separate cache identity. Child contexts use their root subagent execution ID as both
+provider IDs by default. This gives each child an identity distinct from the main agent
+that remains stable through retry and linked continuation; root and child request paths
+apply the same dynamic header/cache binding.
+
+```python
+runtime = create_agent(
+    "oauth@codex:gpt-5.5",
+    context_kwargs={
+        "provider_session_id": durable_session_id,
+        "provider_thread_id": durable_thread_id,
+    },
+)
+```
+
 ## `ModelConfig`
 
 Important fields include:

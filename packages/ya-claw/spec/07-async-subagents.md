@@ -42,7 +42,7 @@ flowchart TD
     W -->|steer active or create run| P
 ```
 
-A child async session represents a configured subagent from the parent profile. Generic session continuations use the existing session/run API surface.
+A child async session represents a configured subagent from the parent profile. Generic session continuations use the existing session/run API surface. It is also the child provider-session boundary: `provider_session_id` uses the child session ID, never the parent session ID, while `provider_thread_id` uses the current child run ID. Resume reuses the child session and creates a new child run, so `x-session-id` and a capable `openai_prompt_cache_key` remain stable while request/thread identity advances.
 
 ## Session Type
 

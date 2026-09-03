@@ -486,6 +486,15 @@ with the child execution. Environment and routing authorities are shared only as
 explicit host services and are rebound after restore; they are never recovered from the
 currently visible TUI session.
 
+Provider-session identity is isolated from the parent. The in-process driver binds a
+child's `provider_session_id` and `provider_thread_id` to its stable
+`root_execution_id`; durable hosts may bind an equivalent stable child-session identity.
+It must differ from the main agent's provider session and survive transport retries,
+suspended segments, and linked continuation. Context-header child models receive the
+same request-time header replacement and capable `openai_prompt_cache_key` derivation as
+root models; direct `Agent.from_spec()` child construction does not bypass this internal
+routing capability.
+
 Named `resume` uses a terminal child execution/history identity to create a linked new
 execution, not just a display name. It resolves the prior record's exact descriptor and
 fingerprint, including through the retained-plan provider when necessary, and starts the
