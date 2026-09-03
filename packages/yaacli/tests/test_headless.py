@@ -20,6 +20,7 @@ from ya_agent_sdk.subagents import (
     SubagentPlanResolver,
     SubagentSpec,
 )
+from ya_agent_sdk.usage import UsageSnapshot
 from yaacli.config import ConfigManager
 from yaacli.durable.capabilities import DurableInboxPumpCapability
 from yaacli.durable.models import ChildPlanManifest
@@ -29,6 +30,7 @@ from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str
 from yaacli.headless import HeadlessEventSink, _run_headless_prompt
 from yaacli.session import TUIContext
+from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY
 
 
 def _manager(tmp_path: Path) -> ConfigManager:
@@ -202,6 +204,7 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
             "status": "completed",
             "output": "durable headless answer",
         }
+        assert SESSION_USAGE_SNAPSHOT_REVISION_KEY in revision.usage
         assert revision.display_projection[-1]["type"] != "RUN_FINISHED"
     finally:
         store.close()
@@ -230,6 +233,17 @@ def test_headless_restore_continues_from_durable_session_head(
             ndjson_stream=first_output,
         )
     )
+
+    store = SQLiteSessionStore(manager.get_session_database_path())
+    try:
+        first_session = store.get_session(first.session_id)
+        assert first_session is not None and first_session.head_revision_id is not None
+        first_revision = store.get_revision(first_session.head_revision_id)
+        assert first_revision is not None
+        first_snapshot = UsageSnapshot.model_validate(first_revision.usage[SESSION_USAGE_SNAPSHOT_REVISION_KEY])
+        first_requests = first_snapshot.total_usage.requests
+    finally:
+        store.close()
 
     second_output = StringIO()
     second = asyncio.run(
@@ -264,6 +278,8 @@ def test_headless_restore_continues_from_durable_session_head(
         ]
         assert "first" in user_prompts
         assert "second" in user_prompts
+        second_snapshot = UsageSnapshot.model_validate(revision.usage[SESSION_USAGE_SNAPSHOT_REVISION_KEY])
+        assert second_snapshot.total_usage.requests > first_requests
     finally:
         store.close()
 

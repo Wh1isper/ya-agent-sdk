@@ -62,9 +62,11 @@ payloads.
 ### File ownership
 
 A revision file is a versioned, self-contained `RevisionRecord`. It includes canonical
-Pydantic AI messages, `ResumableState`, the logical-run input ledger, bounded display
-projection, usage, terminal metadata, revision identity, parent identity, and creation
-time.
+Pydantic AI messages, portable `ResumableState`, the logical-run input ledger, bounded
+display projection, usage, terminal metadata, revision identity, parent identity, and
+creation time. The revision usage payload also carries the compact cumulative session
+usage snapshot used by the TUI status projection; host-only session totals never enter
+portable root or child `ResumableState`.
 
 A checkpoint file is a versioned, self-contained `ExecutionCheckpointRecord`, including
 the complete revision payload and deferred requests when suspended.
@@ -144,7 +146,9 @@ metadata commit.
 
 A session has a stable ID, workspace reference, active/tombstoned status, one committed
 head revision, and timestamps. Session list/show projections read only SQLite metadata;
-they do not load message history merely to compute counts or previews.
+they do not load message history merely to compute counts or previews. A bounded
+session-summary page is produced by one joined query rather than one detail query per
+session.
 
 Every successful, failed, cancelled, or interrupted logical run publishes one terminal
 revision. Revision metadata insertion, session-head publication, run/execution terminal
@@ -221,6 +225,7 @@ Consequences:
 
 - frontend startup marks retained `pending`, `running`, or `suspended` children whose
   process-generation token differs from the current process `lost` and rejects unresolved child input;
+- one process-level file store indexes retained descriptors during that same startup scan and is reused by lazily entered model-profile runtimes, so historical child payloads are not reparsed once per active plan or profile;
 - terminal child records remain inspectable after completion;
 - exact descriptors are embedded in each child file and restored lazily for linked
   continuation or nested authorization;
@@ -234,8 +239,11 @@ Consequences:
 - pending completion-delivery state remains in the child file for later inspection and
   reconciliation.
 
-The TUI's `/agents` view scans only the current session's child files. Switching sessions
-does not reparent work.
+The TUI's `/agents` view and background readiness projection scan only the current
+session's child directory without traversing every session marker. Parsed child state is
+reused while the file's inode, modification time, and size remain unchanged, so the periodic
+projection does not repeatedly decode unchanged history. Switching sessions clears that
+scoped cache and does not reparent work.
 
 ## Single-Process Ownership
 

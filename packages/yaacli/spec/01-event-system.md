@@ -124,8 +124,10 @@ flowchart TD
 ### Background subagent completion
 
 YAACLI scans the active session's durable `subagents/*/state.json` files only to show
-readiness. Projection is idempotent by `execution_id`. It neither consumes the result nor
-wakes the model. `DurableSubagentCompletionDelivery` writes the canonical completion
+readiness, without first traversing every session directory. Unchanged parsed state is
+cached by file inode, modification time, and size for the periodic projection. Projection is
+idempotent by `execution_id`. It neither consumes the result nor wakes the model.
+`DurableSubagentCompletionDelivery` writes the canonical completion
 message to a compatible active session run with an idempotency key and
 `wake_execution=False`.
 

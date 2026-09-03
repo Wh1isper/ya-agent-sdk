@@ -34,6 +34,8 @@ from ya_agent_sdk.usage import (
     unavailable_cost_estimate,
 )
 
+SESSION_USAGE_SNAPSHOT_REVISION_KEY = "session_snapshot"
+
 
 @dataclass(frozen=True)
 class TokenUsageBreakdown:
@@ -57,6 +59,15 @@ class TokenUsageBreakdown:
             cache_write_tokens=max(0, self.cache_write_tokens - start.cache_write_tokens),
             output_tokens=max(0, self.output_tokens - start.output_tokens),
         )
+
+
+def _format_compact_tokens(value: int) -> str:
+    """Format a token count with one decimal and decimal K/M/B units."""
+    amount = max(0, value)
+    for threshold, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if amount >= threshold:
+            return f"{amount / threshold:.1f}{suffix}"
+    return str(amount)
 
 
 def _format_usd(value: Decimal) -> str:
@@ -350,6 +361,16 @@ class SessionUsage:
         self._committed_run_contributions.clear()
         self._superseded_committed_contributions.clear()
 
+    def restore_snapshot(self, snapshot: UsageSnapshot | None) -> None:
+        """Replace session totals with one compact persisted snapshot."""
+        self.clear()
+        if snapshot is None:
+            return
+        restored = snapshot.model_copy(deep=True)
+        self.set_run_snapshot(restored)
+        self.commit_run_snapshot(restored.run_id)
+        self.finalize_run_snapshots(restored.run_id)
+
     @property
     def total_input_tokens(self) -> int:
         """Total input tokens across all models."""
@@ -423,6 +444,17 @@ class SessionUsage:
     def is_empty(self) -> bool:
         """Check if no usage has been recorded."""
         return len(self.model_usages) == 0
+
+    def format_status_tokens(self) -> str:
+        """Format total session tokens for the status bar."""
+        return _format_compact_tokens(self.total_tokens) if not self.is_empty() else "--"
+
+    def format_status_cache_rate(self) -> str:
+        """Format cache-read tokens as a percentage of all session tokens."""
+        total_tokens = self.total_tokens
+        if total_tokens <= 0:
+            return "--"
+        return f"{self.total_cache_read_tokens / total_tokens * 100:.1f}%"
 
     def format_status_cost(self) -> str:
         """Format a compact status-bar API cost estimate."""

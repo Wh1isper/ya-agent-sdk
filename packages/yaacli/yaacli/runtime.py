@@ -361,6 +361,7 @@ def _build_delegation_capability(
     default_model_cfg: ModelConfig,
     deferred_resolver: SubagentDeferredResolver | None,
     capability_catalog: CapabilityCatalog | None = None,
+    execution_store: FileSubagentExecutionStore | None = None,
 ) -> DelegationCapability | None:
     if not manifest.descriptors:
         return None
@@ -376,7 +377,8 @@ def _build_delegation_capability(
         resolver.restore(descriptors_by_id[descriptor_id])
         for _route, descriptor_id in sorted(manifest.active_routes.items())
     )
-    store = FileSubagentExecutionStore(durable_database_path)
+    owns_store = execution_store is None
+    store = execution_store or FileSubagentExecutionStore(durable_database_path)
     try:
         registry = SubagentRegistry(active_plans)
         for plan in active_plans:
@@ -403,7 +405,8 @@ def _build_delegation_capability(
             default_mode=default_mode,
         )
     except BaseException:
-        store.close_sync()
+        if owns_store:
+            store.close_sync()
         raise
 
 
@@ -511,6 +514,7 @@ def create_tui_runtime(
     durable_binding_ref: str | None = None,
     durable_database_path: Path | None = None,
     subagent_deferred_resolver: SubagentDeferredResolver | None = None,
+    subagent_execution_store: FileSubagentExecutionStore | None = None,
     agent_spec: AgentSpec | None = None,
     capability_catalog: CapabilityCatalog | None = None,
     agent_name: str = "yaacli_main_v2",
@@ -630,6 +634,7 @@ def create_tui_runtime(
             default_model_cfg=model_cfg,
             deferred_resolver=subagent_deferred_resolver,
             capability_catalog=effective_catalog,
+            execution_store=subagent_execution_store,
         )
         if delegation is not None:
             capabilities.append(delegation)

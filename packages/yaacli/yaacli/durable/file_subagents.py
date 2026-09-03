@@ -49,6 +49,7 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
         self.state_files = SessionStateFiles(self.database_path)
         self.process_owner_token = self.state_files.current_process_owner_token()
         self._active_descriptors: dict[str, SubagentPlanDescriptor] = {}
+        self._retained_descriptors: dict[str, SubagentPlanDescriptor] | None = None
         self._validate_product_store()
 
     def _validate_product_store(self) -> None:
@@ -98,9 +99,11 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
         return state
 
     def recover_orphaned_executions(self) -> tuple[str, ...]:
-        """Mark process-owned child work lost at an explicit host startup boundary."""
+        """Index retained plans and mark orphaned child work lost in one startup scan."""
+        snapshots = self.state_files.list_subagents()
+        self._cache_retained_descriptors(snapshots)
         recovered_ids: list[str] = []
-        for snapshot in self.state_files.list_subagents():
+        for snapshot in snapshots:
             if snapshot.record.state not in _NONTERMINAL_STATES or self.state_files.process_owner_is_alive(
                 snapshot.owner_token
             ):
@@ -163,23 +166,34 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
             raise ValueError(f"Subagent descriptor collision for {descriptor.descriptor_id!r}")
         self._active_descriptors[descriptor.descriptor_id] = descriptor
 
-    def get_descriptor(self, descriptor_id: str) -> SubagentPlanDescriptor | None:
-        descriptor = self._active_descriptors.get(descriptor_id)
-        if descriptor is not None:
-            return descriptor.model_copy(deep=True)
-        for state in self.state_files.list_subagents():
-            if state.descriptor.descriptor_id == descriptor_id:
-                return state.descriptor.model_copy(deep=True)
-        return None
-
-    def list_referenced_descriptors(self) -> tuple[SubagentPlanDescriptor, ...]:
-        descriptors: dict[str, SubagentPlanDescriptor] = {}
-        for state in self.state_files.list_subagents():
+    def _cache_retained_descriptors(
+        self,
+        states: Sequence[SubagentStateFile],
+    ) -> dict[str, SubagentPlanDescriptor]:
+        descriptors = dict(self._retained_descriptors or {})
+        for state in states:
             descriptor = state.descriptor
             existing = descriptors.get(descriptor.descriptor_id)
             if existing is not None and existing != descriptor:
                 raise RuntimeError(f"Conflicting retained subagent descriptor {descriptor.descriptor_id!r}")
             descriptors[descriptor.descriptor_id] = descriptor
+        self._retained_descriptors = descriptors
+        return descriptors
+
+    def _retained_descriptor_index(self) -> dict[str, SubagentPlanDescriptor]:
+        """Index historical descriptors once instead of rescanning large child payloads per plan."""
+        if self._retained_descriptors is None:
+            self._cache_retained_descriptors(self.state_files.list_subagents())
+        return self._retained_descriptors or {}
+
+    def get_descriptor(self, descriptor_id: str) -> SubagentPlanDescriptor | None:
+        descriptor = self._active_descriptors.get(descriptor_id)
+        if descriptor is None:
+            descriptor = self._retained_descriptor_index().get(descriptor_id)
+        return descriptor.model_copy(deep=True) if descriptor is not None else None
+
+    def list_referenced_descriptors(self) -> tuple[SubagentPlanDescriptor, ...]:
+        descriptors = self._retained_descriptor_index()
         return tuple(descriptors[key].model_copy(deep=True) for key in sorted(descriptors))
 
     async def create(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:
@@ -208,6 +222,8 @@ class FileSubagentExecutionStore(SubagentExecutionStore):
                 updated_at=now,
             )
         )
+        if self._retained_descriptors is not None:
+            self._retained_descriptors[descriptor.descriptor_id] = descriptor
         return record.model_copy(deep=True)
 
     async def save(self, record: SubagentExecutionRecord) -> SubagentExecutionRecord:

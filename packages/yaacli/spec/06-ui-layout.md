@@ -63,7 +63,7 @@ The body order is:
 3. terminal-width-aware status bar;
 4. bounded compose area.
 
-The output window has no fixed height and receives the remaining terminal rows. The model selector and completion menu are `Float` overlays, so opening them does not permanently shrink output.
+The output window has no fixed height and receives the remaining terminal rows. The model selector and completion menu are `Float` overlays, so opening them does not permanently shrink output. Model profiles remain lazily initialized, but switching profiles reuses the already published skill catalog; it does not synchronously rescan every skill directory before confirming the selection. Normal slash dispatch and model-request preparation retain hot-refresh behavior.
 
 ## Output Viewport
 
@@ -130,9 +130,10 @@ The status bar is priority ordered and wraps instead of clipping when its displa
 - active model profile;
 - task/background status;
 - context-window utilization;
+- cumulative session tokens, cache-read ratio, and estimated cost;
 - elapsed foreground time.
 
-Compact layouts below 100 columns omit the active model label, but keep context-window utilization visible when `display.show_token_usage` is enabled.
+Compact layouts below 100 columns omit the active model label, but keep usage visible when `display.show_token_usage` is enabled. Total tokens use decimal `K`, `M`, and `B` units with one decimal place. Cache rate is `cache_read_tokens / (input_tokens + output_tokens)` and is shown with one decimal place. The cumulative usage snapshot is stored in the durable revision usage payload, separately from portable `ResumableState`, so restoring a session does not reset these status values or leak host-only fields into child state.
 
 The timer starts at synchronous foreground claim and retains one `_run_started_at` across thinking, tools, streaming, HITL, and saving. While the TUI waits for HITL user input, the displayed duration is frozen and the wait interval is excluded when timing resumes. The timer is cleared only after the foreground owner exits or pre-start dispatch is cancelled. Durations render as seconds below one minute (`42s`), minutes plus zero-padded seconds below one hour (`3m 05s`), and hours plus zero-padded minutes and seconds thereafter (`1h 05m 09s`).
 
@@ -151,7 +152,7 @@ The phase labels are:
 Background readiness is a session-scoped projection shown in status/output while one of
 the nine foreground phases remains authoritative. It is not a `TUIPhase`.
 
-The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain accepted but not yet applied. `SessionStore` remains authoritative, while the TUI updates a count-only in-memory projection at durable acceptance, native application, and run termination boundaries so rendering never performs synchronous database I/O. The projection exposes no content and is not an input queue. Durable acceptance first produces a replayable `Guidance sent to the active run.` system receipt rather than the `> ...` treatment reserved for ordinary prompts; this visible receipt does not imply model application. The count disappears after native enqueue application or explicit terminal rejection. Each newly applied user steering input then produces one replayable `Guidance injected` block with at most eight sanitized single-line previews of 100 characters each. These receipt/application projections survive terminal segment reconciliation. The application replay identity is a derived digest, never a durable input or native enqueue ID. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
+The status bar shows `steering N pending` while non-initial user inputs for the active durable logical run remain accepted but not yet applied. `SessionStore` remains authoritative, while the TUI updates a count-only in-memory projection at durable acceptance, native application, and run termination boundaries so rendering never performs synchronous database I/O. The projection exposes no content and is not an input queue. Durable acceptance first produces a replayable `Guidance sent to the active run.` system receipt rather than the `> ...` treatment reserved for ordinary prompts; this visible receipt does not imply model application. The count disappears after native enqueue application or explicit terminal rejection. Adjacent user steering inputs applied at the same graph boundary are rendered as one replayable `Guidance injected` block with at most eight sanitized single-line previews of 100 characters each, while their durable application events remain distinct. Recovery inserts a missing application fact beside its original acceptance receipt rather than at the end of the transcript. These receipt/application projections survive terminal segment reconciliation. The application replay identity is a derived digest, never a durable input or native enqueue ID. `COMMAND_RUNNING`, `SAVING`, and `CANCELLING` advertise a wait state rather than claiming that Enter will send or steer.
 
 `TUIStateMachine` enforces `VALID_TRANSITIONS`: an invalid transition returns `False`, leaves the authoritative phase unchanged, and is logged by the TUI boundary. The transition table includes all nine phase origins. Background-result readiness does not participate in foreground phase transitions.
 

@@ -628,6 +628,27 @@ class SQLiteSessionStore:
         ).fetchall()
         return tuple(self._session_from_row(row) for row in rows)
 
+    def list_session_summaries(self, *, limit: int = 100) -> tuple[SessionSummary, ...]:
+        """Load bounded session browser rows with one joined metadata query."""
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        rows = self._connection.execute(
+            """
+            SELECT s.*, r.input_preview, r.output_preview,
+                   COALESCE(r.message_count, 0) AS message_count,
+                   COALESCE(r.display_event_count, 0) AS display_event_count,
+                   lr.model, lr.model_profile_id
+            FROM sessions AS s
+            LEFT JOIN revisions AS r ON r.revision_id = s.head_revision_id
+            LEFT JOIN logical_runs AS lr ON lr.logical_run_id = r.logical_run_id
+            WHERE s.status = ?
+            ORDER BY s.updated_at DESC, s.session_id
+            LIMIT ?
+            """,
+            (SessionStatus.active.value, limit),
+        ).fetchall()
+        return tuple(self._session_summary_from_row(row) for row in rows)
+
     def get_session_summary(self, session_id: str) -> SessionSummary | None:
         row = self._connection.execute(
             """
@@ -642,8 +663,10 @@ class SQLiteSessionStore:
             """,
             (session_id,),
         ).fetchone()
-        if row is None:
-            return None
+        return self._session_summary_from_row(row) if row is not None else None
+
+    @staticmethod
+    def _session_summary_from_row(row: sqlite3.Row) -> SessionSummary:
         return SessionSummary(
             session_id=row["session_id"],
             workspace_ref=row["workspace_ref"],

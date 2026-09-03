@@ -622,12 +622,11 @@ async def _run_runtime_child(
         verbose=request.verbose,
         working_dir=Path(request.cwd),
         initial_session_id=request.session_id,
+        initial_model_profile=model_profile,
         query_terminal_on_enter=False,
     )
     async with app:
         app._apply_resolved_theme(runtime_theme, terminal_resolved=True)
-        if model_profile is not None:
-            await app._switch_model_profile(model_profile, persist=False)
         await app.prepare_startup_session()
         await channel.send({"type": "ready"})
         handoff = await handoff_future

@@ -86,6 +86,7 @@ from ya_agent_sdk.context import (
     PROJECT_GUIDANCE_TAG,
     USER_RULES_TAG,
     NoteManager,
+    ResumableState,
     StreamEvent,
     Task,
     TaskManager,
@@ -128,6 +129,7 @@ from ya_agent_sdk.toolsets.core.interaction import (
     parse_user_question_answer,
 )
 from ya_agent_sdk.toolsets.skills import SHARED_SKILLS_DIR_NAME, SkillToolset
+from ya_agent_sdk.usage import UsageSnapshot
 from ya_agent_sdk.utils import get_latest_request_usage
 
 # Import state management from app.state.
@@ -189,7 +191,7 @@ from yaacli.runtime import (
     compile_runtime_sources,
     create_tui_runtime,
 )
-from yaacli.session import TUIContext, TUIResumableState
+from yaacli.session import TUIContext
 from yaacli.shell_monitor import SHELL_MONITOR_KEY, ShellMonitor, ShellNotification
 from yaacli.streaming.subagent_tracker import format_subagent_display_id
 from yaacli.theme import (
@@ -199,7 +201,7 @@ from yaacli.theme import (
     prompt_toolkit_style_rules,
     resolve_theme,
 )
-from yaacli.usage import SessionUsage, TokenUsageBreakdown
+from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY, SessionUsage, TokenUsageBreakdown
 
 YAACLI_AGUI_ADAPTER_CONFIG = AguiAdapterConfig(run_event_prefix="yaacli", stream_metadata_prefix="yaacli")
 YAACLI_AGUI_REPLAY_CONFIG = AguiReplayConfig(
@@ -556,6 +558,7 @@ class TUIApp:
     verbose: bool = False
     working_dir: Path = field(default_factory=Path.cwd)
     initial_session_id: str | None = None
+    initial_model_profile: ResolvedModelProfile | None = None
     query_terminal_on_enter: bool = True
 
     # Runtime state
@@ -613,6 +616,8 @@ class TUIApp:
     _display_adapter: AguiEventAdapter | None = field(default=None, init=False)
     _projected_steering_receipt_keys: set[str] = field(default_factory=set, init=False, repr=False)
     _projected_steering_keys: set[str] = field(default_factory=set, init=False, repr=False)
+    _steering_group_block_id: BlockId | None = field(default=None, init=False, repr=False)
+    _steering_group_previews: list[str] = field(default_factory=list, init=False, repr=False)
     _pending_steering_count: int = field(default=0, init=False)
 
     # Session
@@ -1013,7 +1018,10 @@ class TUIApp:
         mcp_config = self.config_manager.load_mcp_config()
         capability_plugins = self.config_manager.load_capability_plugin_config()
         capability_catalog = capability_plugins.catalog
-        self._active_model_profile = get_startup_model_profile(self.config, self.config_manager.config_dir)
+        self._active_model_profile = self.initial_model_profile or get_startup_model_profile(
+            self.config,
+            self.config_manager.config_dir,
+        )
         sources = compile_runtime_sources(
             self.config,
             config_dir=self.config_manager.config_dir,
@@ -1030,6 +1038,13 @@ class TUIApp:
             max_sessions=self.config.session.max_sessions,
             max_session_age_days=self.config.session.max_session_age_days,
         )
+        self._subagent_execution_store = FileSubagentExecutionStore(database_path)
+        recovered_child_ids = self._subagent_execution_store.recover_orphaned_executions()
+        if recovered_child_ids:
+            logger.info(
+                "Marked %d interrupted subagent executions lost",
+                len(recovered_child_ids),
+            )
 
         configured_profiles = build_model_profiles(self.config)
         runtime_profiles: list[ResolvedModelProfile | None] = [*configured_profiles] or [None]
@@ -1076,6 +1091,7 @@ class TUIApp:
                     durable_binding_ref=binding_ref,
                     durable_database_path=database_path,
                     subagent_deferred_resolver=_TUISubagentDeferredResolver(self),
+                    subagent_execution_store=self._subagent_execution_store,
                     agent_spec=runtime_agent_spec,
                     capability_catalog=capability_catalog,
                     agent_name="yaacli_main_v2",
@@ -1118,17 +1134,14 @@ class TUIApp:
             self._execution_worker.runtime,
         )
         self._skill_toolset = self._skill_toolsets[active_runtime_id]
-        self._subagent_execution_store = FileSubagentExecutionStore(database_path)
-        recovered_child_ids = self._subagent_execution_store.recover_orphaned_executions()
-        if recovered_child_ids:
-            logger.info(
-                "Marked %d interrupted subagent executions lost",
-                len(recovered_child_ids),
-            )
         for capability in self._runtime.capabilities:
             if isinstance(capability, DelegationCapability):
                 self._subagent_execution_service = capability.service
+                if isinstance(capability.service.store, FileSubagentExecutionStore):
+                    self._subagent_execution_store = capability.service.store
                 break
+        if self._subagent_execution_store is None:
+            self._subagent_execution_store = FileSubagentExecutionStore(database_path)
         self._session_service = SessionApplicationService(self._durable_store, self._execution_worker.coordinator)
         await self._skill_toolset.refresh_context(self._runtime.ctx)
         self._runtime.ctx.injected_context_tags = (
@@ -1469,11 +1482,27 @@ class TUIApp:
         self._scroll_offset = 0
         self._follow_latest = True
 
+    def _reset_steering_display_group(self) -> None:
+        """End the current adjacent applied-steering display group."""
+        self._steering_group_block_id = None
+        self._steering_group_previews = []
+
+    def _render_applied_steering(self, previews: Sequence[str]) -> None:
+        """Merge adjacent native steering events into one visible block."""
+        merged = [*self._steering_group_previews, *previews][:MAX_STEERING_PREVIEW_MESSAGES]
+        rendered = self._event_renderer.render_steering_injected(merged).rstrip("\n")
+        if not self._update_block_by_id(self._steering_group_block_id, rendered):
+            self._steering_group_block_id = self._append_block(rendered)
+        self._steering_group_previews = merged
+
     def _handle_display_events(self, events: Sequence[dict[str, Any]]) -> None:
         """Render display-layer events into the TUI output buffer."""
         width = self._get_terminal_width()
         for event in events:
             event_type = str(event.get("type", ""))
+            is_steering_applied = event_type == "CUSTOM" and event.get("name") == "yaacli.steering_applied"
+            if not is_steering_applied:
+                self._reset_steering_display_group()
             if event_type == "RUN_STARTED":
                 # Tool render state is derived from one run's replay events. Reset it
                 # at run boundaries so canonical replay can reconstruct every call,
@@ -1646,7 +1675,7 @@ class TUIApp:
                         previews = [preview for preview in previews if preview]
                         if previews:
                             self._projected_steering_keys.add(projection_key)
-                            self._append_block(self._event_renderer.render_steering_injected(previews).rstrip("\n"))
+                            self._render_applied_steering(previews)
                 continue
             if event_type == "CUSTOM" and event.get("name") == "yaacli.user_input":
                 value = event.get("value")
@@ -1674,6 +1703,7 @@ class TUIApp:
         self._reset_output_blocks()
         self._projected_steering_receipt_keys.clear()
         self._projected_steering_keys.clear()
+        self._reset_steering_display_group()
         # The transcript was cleared, so live tool state must not suppress the
         # corresponding canonical replay events as already rendered.
         self._tool_messages.clear()
@@ -2385,6 +2415,8 @@ class TUIApp:
                 else "--"
             )
             parts.append(("class:status-bar", f" · ctx {context_pct}"))
+            parts.append(("class:status-bar", f" · tokens {self._session_usage.format_status_tokens()}"))
+            parts.append(("class:status-bar", f" · cache {self._session_usage.format_status_cache_rate()}"))
             parts.append(("class:status-bar", f" · cost {self._session_usage.format_status_cost()}"))
         if self.config.display.show_elapsed_time and self._is_foreground_busy():
             started_at = self._run_started_at if self._run_started_at is not None else self._phase_started_at
@@ -2775,6 +2807,7 @@ class TUIApp:
 
         if self._execution_worker is None:
             raise RuntimeError("Durable worker is not initialized")
+        available_skills = dict(self._runtime.ctx.available_skills) if self._runtime is not None else {}
         try:
             plan = await self._execution_worker.activate(profile.id)
         except KeyError as exc:
@@ -2784,12 +2817,13 @@ class TUIApp:
             plan.runtime,
         )
         self._skill_toolset = self._skill_toolsets[profile.id]
+        self._runtime.ctx.available_skills.clear()
+        self._runtime.ctx.available_skills.update(available_skills)
         self._subagent_execution_service = None
         for capability in self._runtime.capabilities:
             if isinstance(capability, DelegationCapability):
                 self._subagent_execution_service = capability.service
                 break
-        await self._skill_toolset.refresh_context(self._runtime.ctx)
         self._runtime.ctx.injected_context_tags = tuple(
             dict.fromkeys((
                 *self._runtime.ctx.injected_context_tags,
@@ -3437,6 +3471,8 @@ class TUIApp:
 
     def _project_terminal_revision(self, revision: RevisionRecord) -> LogicalRunStatus:
         """Restore and project one canonical durable terminal revision."""
+        self._session_usage.commit_run_snapshot(revision.logical_run_id)
+        self._session_usage.finalize_run_snapshots(revision.logical_run_id)
         status_value = revision.terminal.get("status")
         try:
             status = LogicalRunStatus(status_value)
@@ -3510,8 +3546,14 @@ class TUIApp:
         self._message_history = ModelMessagesTypeAdapter.validate_python(revision.message_history)
         latest_usage = get_latest_request_usage(self._message_history)
         self._current_context_tokens = latest_usage.total_tokens if latest_usage is not None else 0
-        state = TUIResumableState.model_validate(revision.resumable_state)
+        state = ResumableState.model_validate(revision.resumable_state)
         restore_resumable_state_safely(state, self.runtime.ctx)
+        snapshot_payload = revision.usage.get(SESSION_USAGE_SNAPSHOT_REVISION_KEY)
+        session_usage_snapshot = (
+            UsageSnapshot.model_validate(snapshot_payload) if snapshot_payload is not None else None
+        )
+        self.runtime.ctx.session_usage_snapshot = session_usage_snapshot
+        self._session_usage.restore_snapshot(session_usage_snapshot)
         display_events = validate_display_events(revision.display_projection)
         replay = BoundedDisplayReplay(config=YAACLI_AGUI_REPLAY_CONFIG)
         replay.extend_snapshot(display_events)
@@ -4133,7 +4175,9 @@ class TUIApp:
 
         if isinstance(message_event, UsageSnapshotEvent):
             if message_event.snapshot is not None:
-                self._session_usage.set_run_snapshot(message_event.snapshot)
+                run_id = self._active_logical_run_id or message_event.snapshot.run_id
+                snapshot = message_event.snapshot.model_copy(update={"run_id": run_id})
+                self._session_usage.set_run_snapshot(snapshot)
             return
 
         if isinstance(message_event, NamespaceStatusEvent):
@@ -5739,6 +5783,7 @@ class TUIApp:
         ctx.force_inject_instructions = False
         ctx.shell_env = dict(self.config.shell_env) if isinstance(self.config, YaacliConfig) else {}
         ctx.usage_snapshot_entries = {}
+        ctx.session_usage_snapshot = None
         ctx.shell_review_records.clear()
         ctx.user_prompts = None
         ctx.previous_assistant_response_reference = None
@@ -5773,6 +5818,7 @@ class TUIApp:
         self._background_subagent_ids.clear()
         self._projected_steering_receipt_keys.clear()
         self._projected_steering_keys.clear()
+        self._reset_steering_display_group()
         self._pending_steering_count = 0
         self._display_replay.clear()
         self._event_renderer.clear()
@@ -5959,7 +6005,7 @@ class TUIApp:
             )
             state_payload: dict[str, JsonValue] = {}
             if state_file.is_file():
-                state = TUIResumableState.model_validate_json(state_file.read_text(encoding="utf-8"))
+                state = ResumableState.model_validate_json(state_file.read_text(encoding="utf-8"))
                 state_payload = cast(dict[str, JsonValue], state.model_dump(mode="json"))
             display_payload: list[JsonValue] = []
             if display_file.is_file():

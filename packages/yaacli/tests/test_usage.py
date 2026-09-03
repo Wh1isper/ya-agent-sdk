@@ -357,3 +357,32 @@ def test_session_usage_clear_late_replacement_restores_committed_total() -> None
     usage.clear_run_snapshot()
     assert usage.total_input_tokens == 10
     assert usage._run_snapshots == {}
+
+
+def test_session_usage_formats_compact_status_tokens() -> None:
+    expected = {
+        999: "999",
+        1_000: "1.0K",
+        12_345: "12.3K",
+        1_250_000: "1.2M",
+        2_500_000_000: "2.5B",
+    }
+    for tokens, formatted in expected.items():
+        usage = SessionUsage()
+        usage.add("main", "model-a", RunUsage(input_tokens=tokens))
+        assert usage.format_status_tokens() == formatted
+
+
+def test_session_usage_formats_cache_read_over_all_tokens() -> None:
+    usage = SessionUsage()
+    assert usage.format_status_tokens() == "--"
+    assert usage.format_status_cache_rate() == "--"
+
+    usage.add(
+        "main",
+        "model-a",
+        RunUsage(input_tokens=800, output_tokens=200, cache_read_tokens=375),
+    )
+
+    assert usage.format_status_tokens() == "1.0K"
+    assert usage.format_status_cache_rate() == "37.5%"

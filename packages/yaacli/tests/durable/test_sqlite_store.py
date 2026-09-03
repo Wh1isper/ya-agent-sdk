@@ -133,6 +133,22 @@ def test_session_catalog_survives_reopen(tmp_path: Path) -> None:
         assert reopened.list_sessions() == (created,)
 
 
+def test_list_session_summaries_uses_one_bounded_metadata_query(tmp_path: Path) -> None:
+    with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
+        store.create_session("/workspace/older", session_id="older")
+        store.create_session("/workspace/newer", session_id="newer")
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+
+        summaries = store.list_session_summaries(limit=1)
+
+        store._connection.set_trace_callback(None)
+        assert [summary.session_id for summary in summaries] == ["newer"]
+        selects = [statement for statement in statements if statement.lstrip().upper().startswith("SELECT")]
+        assert len(selects) == 1
+        assert "LEFT JOIN revisions" in selects[0]
+
+
 def test_start_run_atomically_persists_execution_and_input(tmp_path: Path) -> None:
     with SQLiteSessionStore(tmp_path / "store.sqlite3") as store:
         session = store.create_session("/workspace")

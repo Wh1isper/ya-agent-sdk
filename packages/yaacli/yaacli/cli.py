@@ -914,9 +914,8 @@ async def _run_tui(
         verbose=verbose,
         working_dir=working_dir or Path.cwd(),
         initial_session_id=session_id,
+        initial_model_profile=model_profile,
     ) as app:
-        if model_profile is not None:
-            await app._switch_model_profile(model_profile, persist=False)
         await app.run()
         return app.session_id if app.has_session_data else None
 
