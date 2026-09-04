@@ -66,6 +66,7 @@ from ya_agent_sdk.filters._builders import (
 )
 from ya_agent_sdk.filters.system_prompt import create_system_prompt_filter
 from ya_agent_sdk.filters.tool_args import fix_truncated_tool_args
+from ya_agent_sdk.inputs import retained_user_messages_for_request
 from ya_agent_sdk.usage import coerce_run_usage, estimate_model_result_cost
 from ya_agent_sdk.utils import get_latest_request_usage
 
@@ -520,7 +521,7 @@ def _build_compacted_messages(
 
     Args:
         summary: The compacted summary content.
-        retained_inputs: Applied structured logical-run input in product order.
+        retained_inputs: Applied or current-request-delivered logical-run input in product order.
         previous_assistant_reference: Visible assistant response immediately before
             the current user request. Used only to resolve references in the request.
 
@@ -638,7 +639,11 @@ def create_cache_friendly_compact_filter(
 
                 compacted = _build_compacted_messages(
                     summary_markdown,
-                    agent_ctx.run_input_ledger.applied_user_messages(),
+                    retained_user_messages_for_request(
+                        agent_ctx.run_input_ledger,
+                        agent_ctx.input_router,
+                        ctx.pending_messages,
+                    ),
                     agent_ctx.previous_assistant_response_reference,
                 )
 
@@ -835,7 +840,11 @@ def create_compact_filter(
                 # is extracted by LLM from conversation history and may be less accurate
                 compacted = _build_compacted_messages(
                     condense_markdown,
-                    agent_ctx.run_input_ledger.applied_user_messages(),
+                    retained_user_messages_for_request(
+                        agent_ctx.run_input_ledger,
+                        agent_ctx.input_router,
+                        ctx.pending_messages,
+                    ),
                     agent_ctx.previous_assistant_response_reference,
                 )
 

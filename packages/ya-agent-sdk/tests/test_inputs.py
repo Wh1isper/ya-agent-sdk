@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic_ai.messages import EnqueuedMessagesEvent
+from pydantic_ai._enqueue import PendingMessage, PendingMessagePriority
+from pydantic_ai.messages import EnqueuedMessagesEvent, ModelRequest, UserPromptPart
 from ya_agent_sdk.inputs import (
     ActiveRunRegistry,
     InputDisposition,
@@ -11,16 +13,24 @@ from ya_agent_sdk.inputs import (
     LogicalInputClosedError,
     LogicalRunInputRouter,
     RunInputLedger,
+    retained_user_messages_for_request,
 )
 
 
 class FakeAgentRun:
     def __init__(self) -> None:
         self.calls: list[tuple[tuple[Any, ...], str]] = []
+        self.pending_messages: list[PendingMessage] = []
+        self.ctx = SimpleNamespace(state=SimpleNamespace(pending_messages=self.pending_messages))
 
-    def enqueue(self, *content: Any, priority: str = "asap") -> str:
+    def enqueue(self, *content: Any, priority: PendingMessagePriority = "asap") -> str:
         self.calls.append((content, priority))
-        return f"enqueue-{len(self.calls)}"
+        enqueue_id = f"enqueue-{len(self.calls)}"
+        pending = PendingMessage.from_content(*content, priority=priority)
+        assert pending is not None
+        pending.enqueue_id = enqueue_id
+        self.pending_messages.append(pending)
+        return enqueue_id
 
 
 def test_run_input_ledger_round_trips_structured_messages() -> None:
@@ -36,6 +46,19 @@ def test_run_input_ledger_round_trips_structured_messages() -> None:
     restored = RunInputLedger.model_validate(ledger.model_dump(mode="json"))
 
     assert restored == ledger
+
+
+def test_run_input_ledger_never_retains_rejected_delivered_identity() -> None:
+    ledger = RunInputLedger(logical_run_id="logical-1")
+    record = ledger.accept(
+        [ModelRequest(parts=[UserPromptPart(content="must stay rejected")])],
+        origin=InputOrigin.user,
+        priority="asap",
+        input_id="rejected-input",
+    )
+    record.disposition = InputDisposition.rejected
+
+    assert ledger.retained_user_messages(delivered_input_ids={record.input_id}) == ()
 
 
 async def test_router_buffers_before_bind_and_correlates_application() -> None:
@@ -65,6 +88,33 @@ async def test_router_buffers_before_bind_and_correlates_application() -> None:
 
     assert applied_input_id == receipt.input_id
     assert record.disposition is InputDisposition.applied
+
+
+async def test_request_reduction_retains_drained_input_before_application_event() -> None:
+    ledger = RunInputLedger(logical_run_id="logical-1")
+    router = LogicalRunInputRouter(ledger)
+    run = FakeAgentRun()
+    await router.bind(run, native_attempt_id="attempt-1")  # type: ignore[arg-type]
+    receipt = await router.enqueue("late guidance")
+    record = ledger.get(receipt.input_id)
+
+    assert retained_user_messages_for_request(ledger, router, run.pending_messages) == ()
+    assert retained_user_messages_for_request(ledger, router, []) == ()
+
+    run.pending_messages.clear()
+
+    assert retained_user_messages_for_request(ledger, router, run.pending_messages) == tuple(record.messages)
+    assert record.disposition is InputDisposition.enqueued
+    assert retained_user_messages_for_request(ledger, router, []) == ()
+
+    router.observe_event(
+        EnqueuedMessagesEvent(
+            enqueue_id="enqueue-1",
+            messages=tuple(record.messages),
+        )
+    )
+
+    assert retained_user_messages_for_request(ledger, router, []) == tuple(record.messages)
 
 
 async def test_router_reuses_stable_input_identity_without_native_duplicate() -> None:

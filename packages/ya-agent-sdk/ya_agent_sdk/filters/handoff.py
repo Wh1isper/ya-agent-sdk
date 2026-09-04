@@ -38,6 +38,7 @@ from ya_agent_sdk.filters._builders import (
     KEEP_TAG_KEY,
     build_context_restored_part,
 )
+from ya_agent_sdk.inputs import retained_user_messages_for_request
 
 logger = get_logger(__name__)
 
@@ -59,7 +60,7 @@ def _build_handoff_messages(
 
     Args:
         summary: The handoff summary content.
-        retained_inputs: Applied structured logical-run input in product order.
+        retained_inputs: Applied or current-request-delivered logical-run input in product order.
 
     Returns:
         List of ModelMessage representing the restored history.
@@ -147,7 +148,11 @@ async def process_handoff_message(
         # Build restored messages without fabricating assistant/tool-call history.
         result = _build_handoff_messages(
             handoff_content,
-            agent_ctx.run_input_ledger.applied_user_messages(),
+            retained_user_messages_for_request(
+                agent_ctx.run_input_ledger,
+                agent_ctx.input_router,
+                ctx.pending_messages,
+            ),
         )
 
         complete_ctx = ContextHandoffCompleteContext(

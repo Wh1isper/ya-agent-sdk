@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
@@ -151,13 +151,32 @@ class RunInputLedger(BaseModel):
             if record.disposition in (InputDisposition.accepted, InputDisposition.enqueued)
         )
 
-    def applied_user_messages(self) -> tuple[ModelMessage, ...]:
+    def retained_user_messages(
+        self,
+        *,
+        delivered_input_ids: Collection[str] = (),
+    ) -> tuple[ModelMessage, ...]:
+        """Return user input that destructive history reduction must retain.
+
+        Native pending-message drain runs before downstream history capabilities,
+        while its ``EnqueuedMessagesEvent`` is observed only after request streaming
+        starts. ``delivered_input_ids`` closes that narrow ordering window without
+        prematurely changing the durable input disposition.
+        """
+        delivered = frozenset(delivered_input_ids)
         return tuple(
             message
             for record in self.records
-            if record.origin is InputOrigin.user and record.disposition is InputDisposition.applied
+            if record.origin is InputOrigin.user
+            and (
+                record.disposition is InputDisposition.applied
+                or (record.disposition is InputDisposition.enqueued and record.input_id in delivered)
+            )
             for message in record.messages
         )
+
+    def applied_user_messages(self) -> tuple[ModelMessage, ...]:
+        return self.retained_user_messages()
 
 
 def _message_identity(messages: Sequence[ModelMessage]) -> bytes:
@@ -196,6 +215,7 @@ class _NativeBinding:
     run: AgentRun[Any, Any]
     loop: asyncio.AbstractEventLoop
     native_attempt_id: str
+    pending_messages: list[PendingMessage]
 
 
 class LogicalRunInputRouter:
@@ -232,6 +252,29 @@ class LogicalRunInputRouter:
         """Return the identity shared by the active native run binding."""
         with self._lock:
             return self._binding.native_attempt_id if self._binding is not None else None
+
+    def request_delivered_input_ids(
+        self,
+        pending_messages: list[PendingMessage] | None,
+    ) -> frozenset[str]:
+        """Identify current-attempt input already drained into this native request.
+
+        Pydantic AI removes a pending message before downstream history capabilities
+        run, but emits its application event only when request streaming begins. The
+        queue identity check excludes nested agent runs that share the same deps and
+        logical router, such as the compact summary run.
+        """
+        with self._lock:
+            binding = self._binding
+            if binding is None or pending_messages is None or pending_messages is not binding.pending_messages:
+                return frozenset()
+            still_pending = {item.enqueue_id for item in pending_messages}
+            return frozenset(
+                record.input_id
+                for record in self.ledger.unresolved()
+                for attempt in record.enqueue_attempts
+                if attempt.native_attempt_id == binding.native_attempt_id and attempt.enqueue_id not in still_pending
+            )
 
     async def enqueue(
         self,
@@ -278,6 +321,7 @@ class LogicalRunInputRouter:
             run=run,
             loop=asyncio.get_running_loop(),
             native_attempt_id=native_attempt_id,
+            pending_messages=run.ctx.state.pending_messages,
         )
         with self._lock:
             if self._closed:
@@ -362,6 +406,20 @@ class LogicalRunInputRouter:
         incoming_bytes = len(ModelMessagesTypeAdapter.dump_json(list(messages)))
         if current_bytes + incoming_bytes > self.max_pending_bytes:
             raise OverflowError("Logical input byte limit exceeded")
+
+
+def retained_user_messages_for_request(
+    ledger: RunInputLedger,
+    router: LogicalRunInputRouter | None,
+    pending_messages: list[PendingMessage] | None,
+) -> tuple[ModelMessage, ...]:
+    """Return applied and current-request-delivered user input for reduction."""
+    delivered_input_ids = (
+        router.request_delivered_input_ids(pending_messages)
+        if isinstance(router, LogicalRunInputRouter)
+        else frozenset()
+    )
+    return ledger.retained_user_messages(delivered_input_ids=delivered_input_ids)
 
 
 @dataclass(frozen=True, slots=True)

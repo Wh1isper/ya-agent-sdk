@@ -3,11 +3,13 @@
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from pydantic_ai._enqueue import PendingMessage, PendingMessagePriority
 from pydantic_ai.messages import ModelRequest, SystemPromptPart, UserPromptPart
 from ya_agent_sdk.context import AgentContext
 from ya_agent_sdk.environment.local import LocalEnvironment
 from ya_agent_sdk.events import HandoffCompleteEvent, HandoffStartEvent
 from ya_agent_sdk.filters.handoff import _build_handoff_messages, process_handoff_message
+from ya_agent_sdk.inputs import InputDisposition, LogicalRunInputRouter
 
 
 async def test_process_handoff_no_handoff_message(tmp_path: Path) -> None:
@@ -86,6 +88,47 @@ async def test_process_handoff_retains_applied_logical_input(tmp_path: Path) -> 
             assert any("context-restored" in p.content for p in user_parts)
             assert result[1] == retained
             assert result[1] is not retained
+
+
+async def test_process_handoff_retains_current_request_input_before_application_event(tmp_path: Path) -> None:
+    async with LocalEnvironment(
+        allowed_paths=[tmp_path],
+        default_path=tmp_path,
+        tmp_base_dir=tmp_path,
+    ) as env:
+        async with AgentContext(env=env) as ctx:
+            ctx.handoff_message = "Summary that omits the late guidance"
+            pending_messages: list[PendingMessage] = []
+            native_run = MagicMock()
+            native_run.ctx.state.pending_messages = pending_messages
+
+            def enqueue(
+                *content: object,
+                priority: PendingMessagePriority = "asap",
+            ) -> str:
+                pending = PendingMessage.from_content(*content, priority=priority)
+                assert pending is not None
+                pending.enqueue_id = "enqueue-1"
+                pending_messages.append(pending)
+                return pending.enqueue_id
+
+            native_run.enqueue.side_effect = enqueue
+            router = LogicalRunInputRouter(ctx.run_input_ledger)
+            ctx.input_router = router
+            await router.bind(native_run, native_attempt_id="attempt-1")
+            receipt = await router.enqueue("late handoff guidance")
+            pending_messages.clear()
+
+            mock_ctx = MagicMock()
+            mock_ctx.deps = ctx
+            mock_ctx.pending_messages = pending_messages
+            history = [ModelRequest(parts=[UserPromptPart(content="Continue")])]
+
+            result = await process_handoff_message(mock_ctx, history)
+
+            assert receipt.disposition is InputDisposition.enqueued
+            assert ctx.run_input_ledger.get(receipt.input_id).disposition is InputDisposition.enqueued
+            assert "late handoff guidance" in str(result)
 
 
 async def test_process_handoff_without_user_prompts(tmp_path: Path) -> None:
