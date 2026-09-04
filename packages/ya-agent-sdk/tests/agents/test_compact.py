@@ -1,3 +1,5 @@
+import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
@@ -16,6 +18,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
     VideoUrl,
 )
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RunUsage
 from ya_agent_sdk.agents import compact as compact_module
 from ya_agent_sdk.agents.compact import (
@@ -35,6 +38,8 @@ from ya_agent_sdk.agents.compact import (
     create_compact_filter,
     get_compact_agent,
 )
+from ya_agent_sdk.agents.main import create_agent, stream_agent
+from ya_agent_sdk.capabilities import RuntimeFoundationCapability
 from ya_agent_sdk.context import AgentContext, ModelConfig
 from ya_agent_sdk.context.agent import PROJECT_GUIDANCE_TAG, USER_RULES_TAG
 
@@ -1273,6 +1278,54 @@ async def test_cache_friendly_compact_filter_uses_current_agent_and_records_usag
         "CompactStartEvent",
         "CompactCompleteEvent",
     ]
+
+
+async def test_compact_retains_steering_drained_before_application_event(monkeypatch) -> None:
+    first_request_started = asyncio.Event()
+    release_first_request = asyncio.Event()
+    model_requests: list[list[ModelMessage]] = []
+
+    async def stream_response(
+        messages: list[ModelMessage],
+        _info: object,
+    ) -> AsyncIterator[str]:
+        model_requests.append(list(messages))
+        if len(model_requests) == 1:
+            first_request_started.set()
+            await release_first_request.wait()
+            yield "initial answer"
+        elif len(model_requests) == 2:
+            yield "summary that deliberately omits the late guidance"
+        else:
+            yield "continued after compact"
+
+    runtime = create_agent(
+        FunctionModel(stream_function=stream_response),
+        capabilities=[RuntimeFoundationCapability()],
+    )
+    monkeypatch.setattr(
+        compact_module,
+        "_need_compact",
+        lambda _ctx, history: "late guidance" in str(history),
+    )
+
+    async with stream_agent(runtime, "initial request") as streamer:
+
+        async def consume_events() -> None:
+            async for _event in streamer:
+                pass
+
+        consumer = asyncio.create_task(consume_events())
+        await asyncio.wait_for(first_request_started.wait(), timeout=5)
+        receipt = await streamer.enqueue("late guidance")
+        release_first_request.set()
+        await asyncio.wait_for(consumer, timeout=5)
+        streamer.raise_if_exception()
+
+    assert receipt.disposition.value == "enqueued"
+    assert len(model_requests) == 3
+    assert "late guidance" in str(model_requests[1])
+    assert "late guidance" in str(model_requests[2])
 
 
 @pytest.mark.asyncio

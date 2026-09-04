@@ -90,8 +90,12 @@ structured content. Semantic identity excludes constructor-generated message tim
 so a durable retry of the same content does not look different merely because it was
 remapped later.
 `EnqueuedMessagesEvent` advances its ledger state to applied. Compact and handoff
-restore all applied entries in product order on every reduction cycle. They do not
-clear the ledger or restore unresolved/rejected entries.
+restore all applied entries in product order on every reduction cycle. Because native
+pending-message drain precedes downstream history processing, they additionally retain
+an entry already removed from the bound native queue for the current request while its
+application event is still buffered. That request-local observation does not advance
+ledger state. They do not clear the ledger, restore entries still waiting in the native
+queue, or restore rejected entries.
 
 The native steering migration removes `AgentContext.steering_messages`, its text-only
 `ResumableState` field, user-source bus injection, the completion guard, and bus input

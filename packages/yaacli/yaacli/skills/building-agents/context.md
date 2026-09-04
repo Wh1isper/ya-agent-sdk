@@ -178,7 +178,10 @@ Hosts should not call a MessageBus or append ad hoc replay strings. Native steer
 5. retain unapplied durable input in the host inbox when no run is active.
 
 Applied user input is preserved by the `RunInputLedger` across compact, handoff, native
-recovery, and durable replay without becoming a second delivery path.
+recovery, and durable replay without becoming a second delivery path. Compact and
+handoff also retain input already drained into the current bound native request while
+its application event is still buffered; this request-local observation does not
+prematurely advance the ledger disposition.
 
 ## Context Contributions
 

@@ -526,8 +526,10 @@ record. A pre-admission resolver/model/driver failure or cancellation rejects it
 a post-admission model failure leaves it applied. Every accepted user or parent-targeted
 steer/queue input is assigned a stable `input_id`, stored structurally, and applied
 through the child router. Applied user input survives compact and handoff exactly as
-defined by `RunInputLedger`; native attempt recovery and durable workflow replay do not
-create duplicates.
+defined by `RunInputLedger`; input already drained into the current child request is
+also retained while its application event is pending, without prematurely advancing
+its disposition. Native attempt recovery and durable workflow replay do not create
+duplicates.
 
 A self fork copies the configured bounded parent canonical-history snapshot at spawn.
 It never shares the live parent message list or consumes future parent messages

@@ -130,11 +130,14 @@ graph advancement. Each accepted `steer` or `queue` input is recorded with its s
 input ID and structured content; `EnqueuedMessagesEvent` marks it applied.
 
 Compact and handoff rebuild history from the summary plus every applied ledger entry in
-original order. Accepted or enqueued entries that are not yet applied remain solely on
-the delivery path, and rejected entries are not presented to the model. The ledger is
-not cleared by history reduction and is reset only at the next logical-run boundary.
-It replaces the steering-only text replay field without replacing canonical history or
-Pydantic AI enqueue.
+original order. They also retain an enqueued entry that Pydantic AI has already drained
+from the bound native queue into the current canonical request when its
+`EnqueuedMessagesEvent` has not yet reached the SDK event observer. This request-local
+retention does not advance the ledger disposition. Entries still present in the native
+queue remain solely on the delivery path, and rejected entries are not presented to the
+model. The ledger is not cleared by history reduction and is reset only at the next
+logical-run boundary. It replaces the steering-only text replay field without replacing
+canonical history or Pydantic AI enqueue.
 
 ## 3. Toolset Instructions
 
@@ -209,8 +212,8 @@ The semantic stages are:
 2. **Canonical repair**: reasoning, restored non-normalized provider tool IDs, and
    recoverable tool argument history are normalized before lifecycle reduction.
 3. **Lifecycle reduction**: handoff, compaction, and cold-start select retained
-   canonical history; compact and handoff restore applied logical-run user inputs from
-   `RunInputLedger`.
+   canonical history; compact and handoff restore applied logical-run user inputs plus
+   input already drained into the current bound native request from `RunInputLedger`.
 4. **System prompt boundary**: Pydantic AI `ReinjectSystemPrompt` restores the
    configured prompt after reconstruction or reset.
 5. **Request projection**: `wrap_model_request` creates a request-only message view.
@@ -237,8 +240,9 @@ Canonical YA tool IDs are reused for subsequent provider requests and host event
 8. Environment envelope context precedes runtime envelope context unless a provider
    protocol requires a different part order.
 9. Provider-emitted tool IDs are normalized before persistence or host emission.
-10. Compact and handoff restore each applied run input exactly once and never consume
-    an unresolved or rejected ledger entry.
+10. Compact and handoff restore each applied run input exactly once. They also retain
+    current-request-delivered input while its application event is pending, without
+    changing ledger disposition; they never consume queued, accepted, or rejected input.
 11. One-shot consumers are exactly once across retries/recovery.
 12. Caller/source order is Pydantic AI's tiebreaker among nodes ready in the same
     topological batch. It is not a global pairwise-stability guarantee for every pair
