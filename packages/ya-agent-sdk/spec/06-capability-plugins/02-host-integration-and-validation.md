@@ -54,7 +54,13 @@ manifest. `create_agent()` does not implicitly load installed extensions.
 YAACLI and YA Claw load one manifest and build one process catalog before declarative
 plan resolution. YA Claw root admission and SDK portable-child resolution call
 `validate_agent_spec_capabilities()` before a static plan is fingerprinted or persisted;
-runtime entry repeats native construction with final dynamic contributions. Other
+runtime entry repeats native construction with final dynamic contributions. Both paths
+materialize declarative capabilities once with Pydantic AI's native registry and template
+context, reject duplicate non-null leaf IDs across declarative and supplied instances,
+and then pass those exact instances to native construction. This preserves YA's strict
+singleton contract despite Pydantic AI 2.39's default-ID merging. The native private
+materialization helpers are isolated in `agents/validation.py`; no alternate spec parser
+or capability factory is introduced. The caller's spec is not mutated. Other
 durable applications should use the same boundary. Their profiles, sessions, requests,
 and imported bundles may reference
 only serialization names present in that catalog; these mutable inputs cannot introduce

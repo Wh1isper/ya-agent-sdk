@@ -73,6 +73,7 @@ from ya_agent_sdk.agents.retry_recovery import (
     history_has_unreturned_tool_calls,
     recover_retry_message_history,
 )
+from ya_agent_sdk.agents.validation import prepare_agent_spec_capabilities
 from ya_agent_sdk.context import (
     AgentContext,
     AgentInfo,
@@ -549,10 +550,16 @@ def create_agent(
             )
 
         if spec is not None:
+            prepared_spec, prepared_capabilities = prepare_agent_spec_capabilities(
+                spec,
+                deps_type=context_type,
+                custom_capability_types=custom_capability_types,
+                capabilities=effective_capabilities,
+            )
             return cast(
                 Agent[AgentDepsT, OutputT],
                 Agent.from_spec(
-                    spec,
+                    prepared_spec,
                     deps_type=context_type,
                     custom_capability_types=custom_capability_types,
                     model=effective_model,
@@ -564,7 +571,7 @@ def create_agent(
                     retries=effective_retries,
                     defer_model_check=defer_model_check,
                     end_strategy=cast(Any, end_strategy),
-                    capabilities=effective_capabilities,
+                    capabilities=prepared_capabilities,
                 ),
             )
         return Agent(
