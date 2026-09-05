@@ -1196,6 +1196,24 @@ def test_get_model_cfg_by_string() -> None:
     assert cfg_grok["max_videos"] == 0
 
 
+@pytest.mark.parametrize(
+    ("gpt6", "gpt5"),
+    [
+        (ModelConfigPreset.GPT6_270K, ModelConfigPreset.GPT5_270K),
+        (ModelConfigPreset.GPT6_350K, ModelConfigPreset.GPT5_350K),
+        (ModelConfigPreset.GPT6_1M, ModelConfigPreset.GPT5_1M),
+    ],
+)
+def test_gpt6_model_cfg_matches_gpt5(gpt6: ModelConfigPreset, gpt5: ModelConfigPreset) -> None:
+    """GPT-6 has distinct preset names with the same configuration as GPT-5."""
+    expected = get_model_cfg(gpt5)
+    assert gpt6 != gpt5
+    assert get_model_cfg(gpt6) == expected
+    assert get_model_cfg(gpt6.value) == expected
+    assert resolve_model_cfg(gpt6.value) == expected
+    assert gpt6.value in list_model_cfg_presets()
+
+
 def test_get_model_cfg_by_alias() -> None:
     """Test getting model config by alias."""
     cfg = get_model_cfg("claude")
@@ -1209,6 +1227,8 @@ def test_get_model_cfg_by_alias() -> None:
 
     cfg = get_model_cfg("openai")
     assert cfg["context_window"] == 270_000  # GPT-5 series
+
+    assert get_model_cfg("gpt6") == get_model_cfg(ModelConfigPreset.GPT6_270K)
 
     cfg = get_model_cfg("gemini")
     assert cfg["context_window"] == 200_000  # Default to 200K (cheaper)
@@ -1312,6 +1332,10 @@ def test_list_model_cfg_presets() -> None:
         "gpt5_1m",
         "gpt5_270k",
         "gpt5_350k",
+        "gpt6",
+        "gpt6_1m",
+        "gpt6_270k",
+        "gpt6_350k",
         "grok",
         "grok_4.5",
         "grok_4.5_latest",

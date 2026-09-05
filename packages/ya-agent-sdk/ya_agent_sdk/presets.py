@@ -1466,6 +1466,11 @@ class ModelConfigPreset(StrEnum):
     GPT5_350K = "gpt5_350k"
     GPT5_1M = "gpt5_1m"
 
+    # OpenAI models (GPT-6 series, matching GPT-5 configurations)
+    GPT6_270K = "gpt6_270k"
+    GPT6_350K = "gpt6_350k"
+    GPT6_1M = "gpt6_1m"
+
     # DeepSeek models
     DEEPSEEK_V4_400K = "deepseek_v4_400k"
     DEEPSEEK_V4_1M = "deepseek_v4_1m"
@@ -1540,6 +1545,37 @@ _MODEL_CFG_REGISTRY: dict[str, dict[str, Any]] = {
         "context_window": 922_000,
         "max_images": 20,
         "max_videos": 0,  # GPT doesn't support video
+        "support_gif": False,
+        "split_large_images": True,
+        "image_split_max_height": 4096,
+        "image_split_overlap": 50,
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
+    },
+    # OpenAI GPT-6 series (matching GPT-5 configurations)
+    ModelConfigPreset.GPT6_270K.value: {
+        "context_window": 270_000,
+        "max_images": 20,
+        "max_videos": 0,
+        "support_gif": False,
+        "split_large_images": True,
+        "image_split_max_height": 4096,
+        "image_split_overlap": 50,
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
+    },
+    ModelConfigPreset.GPT6_350K.value: {
+        "context_window": 350_000,
+        "max_images": 20,
+        "max_videos": 0,
+        "support_gif": False,
+        "split_large_images": True,
+        "image_split_max_height": 4096,
+        "image_split_overlap": 50,
+        "capabilities": {ModelFeature.vision, ModelFeature.openai_prompt_cache_key},
+    },
+    ModelConfigPreset.GPT6_1M.value: {
+        "context_window": 922_000,
+        "max_images": 20,
+        "max_videos": 0,
         "support_gif": False,
         "split_large_images": True,
         "image_split_max_height": 4096,
@@ -1646,6 +1682,7 @@ _MODEL_CFG_ALIASES: dict[str, str] = {
     "anthropic": ModelConfigPreset.CLAUDE_1M.value,
     "anthropic_400k": ModelConfigPreset.CLAUDE_400K.value,
     "gpt5": ModelConfigPreset.GPT5_270K.value,
+    "gpt6": ModelConfigPreset.GPT6_270K.value,
     "openai": ModelConfigPreset.GPT5_270K.value,
     "deepseek": ModelConfigPreset.DEEPSEEK_V4_1M.value,
     "deepseek_400k": ModelConfigPreset.DEEPSEEK_V4_400K.value,
