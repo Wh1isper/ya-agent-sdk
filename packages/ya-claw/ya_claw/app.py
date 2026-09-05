@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from loguru import logger
+from pydantic_ai import prices
 from sqlalchemy.ext.asyncio import AsyncEngine
 from ya_oauth_provider import OAuthRefreshSupervisor, create_oauth_refresh_supervisor_for_models
 
@@ -119,7 +120,14 @@ class ClawApplication:
         return app
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: C901
+    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
+        # The application owns price refresh across all sessions, runs, and children.
+        with prices.update_in_background():
+            async with self._service_lifespan(app):
+                yield
+
+    @asynccontextmanager
+    async def _service_lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:  # noqa: C901
         logger.info(
             "Starting YA Claw app environment={} instance_id={} host={} port={} public_base_url={}",
             self.settings.environment,

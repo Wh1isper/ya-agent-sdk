@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -130,12 +131,33 @@ def test_create_app_without_plugin_manifest_does_not_scan_entry_points(
     assert app.state.capability_plugins.manifest.entry_points == ()
 
 
-def test_healthz() -> None:
-    with TestClient(create_app()) as client:
+def test_healthz(mock_price_updates: MagicMock) -> None:
+    app = create_app()
+    mock_price_updates.assert_not_called()
+    with TestClient(app) as client:
+        mock_price_updates.assert_called_once_with()
         response = client.get("/healthz")
+        assert client.get("/healthz").status_code == 200
+        mock_price_updates.assert_called_once_with()
+        mock_price_updates.return_value.__exit__.assert_not_called()
+        mock_price_updates.return_value.wait.assert_not_called()
 
+    mock_price_updates.return_value.__exit__.assert_called_once()
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "database": "ok", "runtime_state": "ok"}
+
+
+def test_failed_startup_releases_price_updater(monkeypatch, mock_price_updates: MagicMock) -> None:
+    from ya_claw.config import ClawSettings
+
+    def fail_startup(self: ClawSettings) -> None:
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(ClawSettings, "ensure_runtime_directories", fail_startup)
+    with pytest.raises(RuntimeError, match="startup failed"), TestClient(create_app()):
+        pytest.fail("Startup must fail")
+    mock_price_updates.assert_called_once_with()
+    mock_price_updates.return_value.__exit__.assert_called_once()
 
 
 def test_docs_and_openapi_are_public() -> None:

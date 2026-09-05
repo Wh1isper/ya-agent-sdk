@@ -71,6 +71,16 @@ contract.
 construction is deferred until `AgentRuntime.__aenter__()` because Environment setup and
 resource restoration may create capability contributors.
 
+Model price refresh is application-owned infrastructure. `AgentRuntime` does not
+start or stop price updates. Applications retain a
+`pydantic_ai.prices.update_in_background()` handle across their agent runs and release
+it with `stop()` at shutdown. YAACLI owns this in its TUI application and headless
+entrypoint; YA Claw owns it in the FastAPI lifespan. Upstream provides the shared
+per-process worker, immediate/hourly downloads, and last-good-price fallback.
+There is no first-download barrier, SDK scheduling layer, or automatic repricing of
+recorded usage. Per-runtime ownership is deliberately avoided because restarting a
+stopped updater can download again without waiting an hour.
+
 Runtime entry proceeds in this order:
 
 1. enter the Environment and restore registered resources;

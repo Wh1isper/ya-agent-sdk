@@ -17,6 +17,7 @@ from pydantic_ai import (
     DeferredToolRequests,
     DeferredToolResults,
     ToolDenied,
+    prices,
 )
 from pydantic_ai.messages import RetryPromptPart
 from ya_agent_sdk.context import (
@@ -176,7 +177,7 @@ async def run_headless_prompt(
 ) -> HeadlessRunResult:
     """Run one durable prompt, reserving stdout exclusively for NDJSON."""
     ndjson_stream = sys.stdout
-    with redirect_stdout(sys.stderr):
+    with redirect_stdout(sys.stderr), prices.update_in_background():
         return await _run_headless_prompt(
             config=config,
             config_manager=config_manager,

@@ -41,7 +41,7 @@ load_dotenv()
 
 import json
 
-from pydantic_ai import ModelSettings, PartEndEvent, PartStartEvent, TextPart, ToolOutput
+from pydantic_ai import ModelSettings, PartEndEvent, PartStartEvent, TextPart, ToolOutput, prices
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -369,4 +369,6 @@ Please conduct deep research on the following objective and produce a comprehens
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(main())
+    # Keep price refresh alive for the application, including child agent runs.
+    with prices.update_in_background():
+        asyncio.run(main())

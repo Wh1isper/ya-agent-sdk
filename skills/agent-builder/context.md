@@ -43,6 +43,31 @@ async with runtime:
 `async with runtime` when one logical host flow may call `stream_agent()` repeatedly,
 for example across deferred HITL continuations.
 
+### Keep model prices current at application startup
+
+SDK runtimes do not start price downloads. Applications should explicitly call
+`pydantic_ai.prices.update_in_background()` once at startup, retain the handle across
+turns and child runtimes, and stop it on shutdown:
+
+```python
+import asyncio
+from pydantic_ai import prices
+
+updater = prices.update_in_background()
+try:
+    asyncio.run(main())  # Your application's main coroutine, containing all agent runs.
+finally:
+    updater.stop()
+```
+
+Alternatively, wrap the application in `with prices.update_in_background():`.
+Downloads run immediately and hourly in one upstream-managed worker per process.
+Startup never waits for the first download, and failures keep existing prices.
+Early responses may be unpriced; recorded usage snapshots are not automatically
+recalculated. Do not start and stop the updater per turn: once all handles stop,
+restarting can trigger another immediate download. YAACLI and YA Claw already own
+this lifecycle. Standalone offline applications can omit it and use bundled prices.
+
 ## Constructing Context
 
 Use `model_cfg` for context/media/recovery policy and `context_kwargs` for additional
