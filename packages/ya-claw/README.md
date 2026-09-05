@@ -55,6 +55,21 @@ The runtime shape is:
 
 This section is the maintainer index for implementation details that affect code changes across YA Claw.
 
+### Model Price Updates
+
+The FastAPI lifespan owns one `pydantic_ai.prices.update_in_background()` handle from
+application startup through shutdown, including startup failure cleanup. It stays
+alive across all sessions, runs, and subagents in that application process. Individual
+SDK runtimes do not start or stop downloads.
+
+The upstream worker downloads immediately and then hourly. Startup and requests never
+wait for the download; failures retain existing prices, and early responses may still
+be unpriced. Recorded usage snapshots are not automatically repriced. Each service
+process owns its own updater; restarting the process triggers another download.
+
+Standalone SDK hosts should likewise call this method at application startup and
+`stop()` at shutdown. See [the SDK guide](../ya-agent-sdk/README.md#keep-model-prices-up-to-date).
+
 ### Runtime Defaults
 
 - `YA_CLAW_API_TOKEN` is required before service startup.

@@ -29,6 +29,7 @@ from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
     TextPart,
+    prices,
 )
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -342,4 +343,6 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Keep price refresh alive for the application, not for each agent runtime.
+    with prices.update_in_background():
+        asyncio.run(main())

@@ -13,6 +13,9 @@ subagent APIs.
 ## Start Here
 
 - Construct an unentered runtime with `create_agent()`.
+- At application startup, call `pydantic_ai.prices.update_in_background()` and retain
+  its handle until shutdown (`stop()`). Do not restart it per run. SDK runtimes do not
+  enable price downloads themselves; YAACLI and YA Claw manage this for their users.
 - Put every agent behavior in the ordered `capabilities=` list.
 - Validate durable static specs with `validate_agent_spec_capabilities()` before
   fingerprinting or persistence; runtime entry still validates dynamic contributions.

@@ -57,6 +57,7 @@ from pydantic_ai import (
     EnqueuedMessagesEvent,
     ToolDenied,
     UserContent,
+    prices,
 )
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -1005,6 +1006,8 @@ class TUIApp:
         self._exit_stack = AsyncExitStack()
         await self._exit_stack.__aenter__()
         try:
+            # Keep one price updater alive across every turn and session in this app.
+            self._exit_stack.callback(prices.update_in_background().stop)
             return await self._initialize_runtime()
         except BaseException as error:
             await self.__aexit__(type(error), error, error.__traceback__)

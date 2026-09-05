@@ -125,6 +125,48 @@ shell supersedes the redundant `mkdir`, `move`, `copy`, and `delete` tools.
 
 When stream recovery is enabled, delegated subagents and self forks use the same overall recovery mechanism as the root run. By default they inherit the root run's effective policy; a trusted host may materialize an explicit child `ModelConfig` policy instead. Each child retries transient provider or network stream failures against its own independent transport budget, resumes from its own recovered history, and accumulates usage across recovered attempts. Successful child-local recovery does not consume the root agent's execution recovery budget; only an exhausted child failure propagates to the root tool-call path.
 
+## Keep Model Prices Up to Date
+
+**Applications should call `pydantic_ai.prices.update_in_background()` once at
+startup and retain its handle until shutdown.** The SDK estimates costs through
+`ModelResponse.cost()`, but neither `create_agent()` nor `AgentRuntime` starts price
+downloads automatically. Upgrading the package alone does not enable live updates.
+
+```python
+import asyncio
+
+from pydantic_ai import prices
+from ya_agent_sdk.agents.main import create_agent
+
+
+async def main():
+    async with create_agent("openai-chat:gpt-4o") as runtime:
+        result = await runtime.agent.run("Hello", deps=runtime.ctx)
+        print(result.output)
+
+
+# Own the updater at the application boundary, outside individual agent runs.
+with prices.update_in_background():
+    asyncio.run(main())
+```
+
+The context manager calls `stop()` on exit. Applications with separate startup and
+shutdown hooks can instead retain `updater = prices.update_in_background()` at
+startup and call `updater.stop()` in their shutdown cleanup.
+
+The upstream worker downloads immediately and then hourly without blocking agent
+startup. Failed downloads retain existing prices. Early responses may still be
+unpriced; previously captured usage snapshots are not automatically recalculated.
+Updates share one worker and in-memory price snapshot **per process**, not across
+processes. Keep the handle alive across turns, sessions, and child agents: stopping
+all handles and starting again can trigger another immediate download even within
+one hour. No SDK scheduler, singleton, or capability is needed.
+
+YAACLI and YA Claw already manage this at their application boundaries. Standalone
+SDK applications should follow the pattern above; offline applications may omit it
+and use bundled prices. The runnable `general.py` and `deepresearch.py` examples
+include application-scoped updates.
+
 ## Capability Plugins
 
 Applications can select installed third-party capability types and grant configured

@@ -4,7 +4,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from prompt_toolkit.widgets import TextArea
 from pydantic_ai import Tool
 from pydantic_ai.capabilities import Toolset as NativeToolsetCapability
@@ -24,6 +26,7 @@ from yaacli.session import TUIContext
 async def test_tui_turn_uses_durable_application_service(
     tmp_path: Path,
     monkeypatch: Any,
+    mock_price_updates: MagicMock,
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -69,7 +72,9 @@ session_dir = "{session_dir}"
     )
     app = TUIApp(config, manager, working_dir=tmp_path)
 
+    mock_price_updates.assert_not_called()
     async with app:
+        mock_price_updates.assert_called_once_with()
         stage_logs = [line for line in startup_logs if line.startswith("Startup stage ")]
         assert [line.split(" completed in ", 1)[0] for line in stage_logs] == [
             "Startup stage runtime-sources",
@@ -99,6 +104,29 @@ session_dir = "{session_dir}"
         session = app._durable_store.get_session(app.session_id)
         assert session is not None
         assert session.head_revision_id is not None
+
+        # A second turn reenters SDK runtimes but must retain the same app updater.
+        assert app._launch_agent("another turn") is True
+        assert app._agent_task is not None
+        await app._agent_task
+        mock_price_updates.assert_called_once_with()
+        mock_price_updates.return_value.stop.assert_not_called()
+        mock_price_updates.return_value.wait.assert_not_called()
+    mock_price_updates.return_value.stop.assert_called_once_with()
+
+
+@pytest.mark.parametrize("error", [ValueError("startup failed"), asyncio.CancelledError()])
+async def test_tui_failed_startup_releases_price_updater(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_price_updates: MagicMock, error: BaseException
+) -> None:
+    manager = ConfigManager(config_dir=tmp_path / "config")
+    app = TUIApp(manager.load(), manager, working_dir=tmp_path, query_terminal_on_enter=False)
+    monkeypatch.setattr(TUIApp, "_initialize_runtime", AsyncMock(side_effect=error))
+    with pytest.raises(type(error)):
+        async with app:
+            pytest.fail("Startup must fail")
+    mock_price_updates.assert_called_once_with()
+    mock_price_updates.return_value.stop.assert_called_once_with()
 
 
 async def test_tui_durable_cancel_is_a_normal_terminal_result(

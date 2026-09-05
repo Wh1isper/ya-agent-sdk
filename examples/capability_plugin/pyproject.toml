@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Installable custom capability example for ya-agent-sdk"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-dependencies = ["pydantic-ai-slim>=2.39.0,<3"]
+dependencies = ["pydantic-ai-slim>=2.40.0,<3"]
 
 [project.entry-points."ya_agent_sdk.capabilities"]
 "example.text_metrics" = "example_capability_plugin:TextMetricsCapability"

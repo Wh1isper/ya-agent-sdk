@@ -38,6 +38,23 @@ Update with uv:
 uv tool upgrade yaacli
 ```
 
+## Model Price Updates
+
+YAACLI calls `pydantic_ai.prices.update_in_background()` once when the TUI application
+enters, keeps the handle across turns, sessions, and subagent runs, and stops it when
+the application exits. Both the direct TUI entrypoint and fast-start execution child
+use this boundary; the fast-start terminal parent does not start an updater. Headless
+execution owns a handle for the entire invocation, including internal continuations.
+
+The upstream worker downloads immediately and then hourly, without blocking startup.
+Failed downloads retain existing prices, and early responses may still be unpriced.
+Price updates do not recalculate recorded usage snapshots. Sharing is per process;
+a new CLI process downloads again. No per-turn SDK runtime starts a price updater.
+
+For your own SDK application, retain an upstream updater at startup and call `stop()`
+at shutdown, or wrap the application in `with prices.update_in_background():`. See
+[the SDK guide](../ya-agent-sdk/README.md#keep-model-prices-up-to-date).
+
 ## Subagent Configuration
 
 YAACLI accepts both generic Markdown definitions and native versioned `SubagentSpec`

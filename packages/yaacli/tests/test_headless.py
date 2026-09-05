@@ -28,7 +28,7 @@ from yaacli.durable.sqlite import SQLiteSessionStore
 from yaacli.durable.subagents import FileSubagentExecutionStore
 from yaacli.environment import TUIEnvironment
 from yaacli.errors import safe_exception_str
-from yaacli.headless import HeadlessEventSink, _run_headless_prompt
+from yaacli.headless import HeadlessEventSink, _run_headless_prompt, run_headless_prompt
 from yaacli.session import TUIContext
 from yaacli.usage import SESSION_USAGE_SNAPSHOT_REVISION_KEY
 
@@ -150,6 +150,7 @@ def test_safe_exception_str_survives_broken_exception_formatters() -> None:
 async def test_headless_testmodel_turn_commits_before_terminal_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mock_price_updates: MagicMock,
 ) -> None:
     manager = _manager(tmp_path)
     config = manager.load()
@@ -161,7 +162,8 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
     )
 
     output = StringIO()
-    result = await _run_headless_prompt(
+    monkeypatch.setattr("sys.stdout", output)
+    result = await run_headless_prompt(
         config=config,
         config_manager=manager,
         prompt="hello durable headless",
@@ -169,8 +171,10 @@ async def test_headless_testmodel_turn_commits_before_terminal_event(
         session_id=None,
         model_profile_id=None,
         worker=False,
-        ndjson_stream=output,
     )
+    mock_price_updates.assert_called_once_with()
+    mock_price_updates.return_value.__exit__.assert_called_once()
+    mock_price_updates.return_value.wait.assert_not_called()
 
     events = [json.loads(line) for line in output.getvalue().splitlines()]
     assert events[0]["type"] == "RUN_STARTED"
